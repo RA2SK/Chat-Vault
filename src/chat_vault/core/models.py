@@ -11,40 +11,41 @@ from datetime import datetime
 
 @dataclass
 class Conversation:
-    """对话类，代表一次完整的对话，包括主链和分支。"""
+    """对话模型，代表一次完整的对话，包括主链和消息级分支。"""
 
-    source_id: str                                  # 备份包内唯一标识
+    source_id: str                                  # 备份包内唯一标识，幂等键
     title: str
-    raw_data: str
+    raw_file: str                                   # 原始备份文件在存档目录内的相对路径
 
     source_type: str = "chatbox"                    # "chatbox" | "cherry studio" | "other"
+    raw_path: str | None = None                     # 会话在备份包内的路径
     id: int | None = None
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: datetime | None = None              # 由适配器根据首条消息计算
+    updated_at: datetime | None = None              # 由适配器根据末条消息计算
     is_published: bool = False
-    import_batch: int | None = None                 # -> ImportRecord.id
+    import_batch: int | None = None                 # -> ImportBatch.id
     messages: list["Message"] = field(default_factory=list)
     branches: list["Branch"] = field(default_factory=list)
 
 @dataclass
 class Message:
-    """消息模型类，表示一次对话中的一条消息。"""
+    """消息模型，表示一次对话中的一条消息。"""
 
-    source_id: str
-    role: str
-    content: str                                    # 正文 Markdown
-    thinking: str                                   # 思考内容
-    position: int                                   # 主链或分支内的序号
+    source_id: str                                  
+    role: str                                       # "user" | "assistant" | "system"
+    content: str                                    # 正文 Markdown，已合并并清洗 text 片段
+    position: int                                   # 在所属链中的序号
 
+    thinking: str = ""                              # 思考链，导入时清洗，默认不展示
+    model: str | None = None                        # 生成该消息的模型名
     id: int | None = None
     conversation_id: int | None = None
     timestamp: datetime | None = None
     branch_id: int | None = None                    # None = 主链；非空 = 属于某分支
-    metadata: dict = field(default_factory=dict)    # 模型名等扩展信息
 
 @dataclass
 class Branch:
-    """分支模型类，表示一次对话中的一个分支。"""
+    """分支模型，仅表示消息级分支，即 messageForksHash。"""
 
     source_id: str
     index: int
@@ -57,18 +58,19 @@ class Branch:
 
 @dataclass
 class Attachment:
-    """附件模型类，表示一次对话中的一个附件。"""
+    """附件模型，表示一次对话中的一个附件。"""
 
     conversation_id: int
-    attach_type: str                                # "image" | "file" | "other"  
-    source_ref: str
+    attach_type: str                                # "image" | "file" | "other"
+    source_ref: str                                 # 资源引用标识，禁止绝对路径
 
     id: int | None = None
     display_name: str | None = None
     mime_type: str | None = None
-    raw_data: str | None = None
+    checksum: str | None = None                     # 资源去重键
+    size: int | None = None                         # 资源大小，单位为字节
     message_id: int | None = None
-    display_index: int | None = None
+    display_index: int | None = None                # 在消息内的展示顺序
 
 @dataclass
 class Comment:
@@ -115,18 +117,19 @@ class User:
 # ============ 运维域 ============
 
 @dataclass
-class ImportRecord:
-    """导入记录模型类，用于记录每次导入操作的详细信息。"""
-    
+class ImportBatch:
+    """导入批次模型，记录每次导入操作的结果。"""
+
     file_name: str
-    file_hash: str                                  # 内容哈希，识别重复导入
+    file_hash: str                                  # 整个备份文件的 SHA-256，识别重复导入
     started_at: datetime
     status: str                                     # "success" | "partial" | "failed"
     total_count: int
     success_count: int
     failed_count: int
 
-    source_type: str = "chatbox"                    # "chatbox" | "cherry studio" | "other"
+    source_type: str = "chatbox"
+    format_key: str = "chatbox.v2"                  # 程序内部格式识别码，与导入适配器对应
     id: int | None = None
     error_summary: str | None = None
     finished_at: datetime | None = None
