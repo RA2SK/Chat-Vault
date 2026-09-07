@@ -1,3 +1,13 @@
 *.code-workspace
-.vscode/
+*.egg-info/
+
 private/
+build/
+dist/
+data/raw/
+
+.venv/
+.vscode/
+.pytest_cache/
+.ruff_cache/
+
