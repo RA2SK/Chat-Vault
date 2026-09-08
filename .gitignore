@@ -1,5 +1,8 @@
 *.code-workspace
 *.egg-info/
+*.pyc
+*.pyo
+**/__pycache__/
 
 private/
 build/
