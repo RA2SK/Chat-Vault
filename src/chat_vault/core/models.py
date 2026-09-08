@@ -15,10 +15,10 @@ class Conversation:
 
     source_id: str                                  # 备份包内唯一标识，幂等键
     title: str
-    raw_file: str                                   # 原始备份文件在存档目录内的相对路径
 
+    source_archive: str | None = None               # 原始备份文件在存档目录当中的文件名，由 import_service 填写
+    source_entry: str | None = None                 # 会话在原始备份文件内的相对路径，由适配器填写
     source_type: str = "chatbox"                    # "chatbox" | "cherry studio" | "other"
-    raw_path: str | None = None                     # 会话在备份包内的路径
     id: int | None = None
     created_at: datetime | None = None              # 由适配器根据首条消息计算
     updated_at: datetime | None = None              # 由适配器根据末条消息计算
