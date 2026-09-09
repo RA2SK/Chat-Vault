@@ -4,10 +4,13 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TypedDict
 
+class Checksum(TypedDict):                          # 定义保存去重校验值的类型别名
+    algorithm: str
+    value: str
 
 # ============ 内容域 ============
-
 
 @dataclass
 class Conversation:
@@ -26,6 +29,7 @@ class Conversation:
     import_batch: int | None = None                 # -> ImportBatch.id
     messages: list["Message"] = field(default_factory=list)
     branches: list["Branch"] = field(default_factory=list)
+    attachments: list["Attachment"] = field(default_factory=list)
 
 @dataclass
 class Message:
@@ -60,17 +64,20 @@ class Branch:
 class Attachment:
     """附件模型，表示一次对话中的一个附件。"""
 
-    conversation_id: int
     attach_type: str                                # "image" | "file" | "other"
     source_ref: str                                 # 资源引用标识，禁止绝对路径
 
-    id: int | None = None
+    message_source_id: str | None = None            # 出现在哪条消息
+    display_index: int | None = None                # 在该消息内的展示顺序
+
     display_name: str | None = None
     mime_type: str | None = None
-    checksum: str | None = None                     # 资源去重键
+    checksum: Checksum | None = None                # 资源去重
     size: int | None = None                         # 资源大小，单位为字节
-    message_id: int | None = None
-    display_index: int | None = None                # 在消息内的展示顺序
+
+    id: int | None = None                           
+    conversation_id: int | None = None              # 不在输入适配器处理，由嵌套关系回填
+    message_id: int | None = None                   # 不在输入适配器处理，由 message_source_id 解析后回填
 
 @dataclass
 class Comment:

@@ -1,15 +1,15 @@
 """针对Chatbox 1.22及以上版本的输入适配器"""
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterator
 from datetime import datetime, timezone
 import zipfile
 import json
 from .base import BaseImporter, ParseResult
-from chat_vault.core.models import Conversation, Message
+from chat_vault.core.models import Conversation, Message, Attachment, Checksum
 
 """需要维护的全局变量"""
-EMPTY_THINKING_MARKERS = {"", "[redacted]"} # 用于清理思考链的空值标记，避免在导入时显示无意义的思考内容
+EMPTY_THINKING_MARKERS = {"", "[REDACTED]"}     # 用于清理思考链的空值标记, 避免在导入时显示无意义的思考内容
 
 
 class ChatboxV2Importer(BaseImporter):
@@ -51,10 +51,11 @@ class ChatboxV2Importer(BaseImporter):
             return False
 
     def parse(self, path: Path) -> Iterator[ParseResult]:
-        """解析 Chatbox 备份，并逐个产出解析结果。"""
+        """解析 Chatbox 备份, 并逐个产出解析结果。"""
 
         try:
             with zipfile.ZipFile(path) as archive:
+                archive_names = set(archive.namelist())
 
                 # === 开始进行 manifest.json 的解析 ===
                 manifest = json.loads(
@@ -67,6 +68,26 @@ class ChatboxV2Importer(BaseImporter):
                     )
                     return
 
+                # === 开始进行 resources 的解析 ===
+                resources = manifest.get("resources", [])
+                resource_by_storage_key: dict[str, dict] = {}
+
+                if isinstance(resources, list):
+                    for resource in resources:
+                        if not isinstance(resource, dict): 
+                            continue
+
+                        resource_keys = resource.get("originalStorageKeys", [])
+                        if not isinstance(resource_keys, list): 
+                            continue
+
+                        for storage_key in resource_keys:
+                            if isinstance(storage_key, str) and storage_key:
+                                resource_by_storage_key[storage_key] = resource
+
+
+
+                # === 开始进行 session.json 的解析 ===
                 sessions = manifest.get("sessions")
 
                 if not isinstance(sessions, list):
@@ -75,8 +96,7 @@ class ChatboxV2Importer(BaseImporter):
                         source_ref="manifest.json",
                     )
                     return
-
-                # === 开始进行 session.json 的解析 ===
+                
                 for session_info in sessions:
                     if not isinstance(session_info, dict):
                         yield ParseResult(
@@ -156,7 +176,7 @@ class ChatboxV2Importer(BaseImporter):
                         )
                         continue
 
-                    # === 对session.json的对话部分的解析成功，通过各项验证，可以建立对话对象 ===
+                    # === 对session.json的对话部分的解析成功, 通过各项验证, 可以建立对话对象 ===
                     conversation = Conversation(
                         source_id=source_id,
                         title=title,
@@ -164,12 +184,14 @@ class ChatboxV2Importer(BaseImporter):
                     )
 
                     warnings: list[str] = []
+                    earliest_timestamp: datetime | None = None
+                    latest_timestamp: datetime | None = None
 
-                    # === 开始解析消息列表，进行必要的验证 ===
+                    # === 开始解析消息列表, 进行必要的验证 ===
                     for position, message_data in enumerate(messages):
                         if not isinstance(message_data, dict):
                             warnings.append(
-                                f"第 {position} 条消息不是有效对象，已跳过"
+                                f"第 {position} 条消息不是有效对象, 已跳过"
                             )
                             continue
 
@@ -179,36 +201,37 @@ class ChatboxV2Importer(BaseImporter):
 
                         if not isinstance(message_id, str) or not message_id:
                             warnings.append(
-                                f"第 {position} 条消息缺少有效的 id，已跳过"
+                                f"第 {position} 条消息缺少有效的 id, 已跳过"
                             )
                             continue
 
                         if not isinstance(role, str) or not role:
                             warnings.append(
-                                f"第 {position} 条消息缺少有效的 role，已跳过"
+                                f"第 {position} 条消息缺少有效的 role, 已跳过"
                             )
                             continue
 
                         if not isinstance(content_parts, list):
                             warnings.append(
-                                f"第 {position} 条消息缺少有效的 contentParts，已跳过"
+                                f"第 {position} 条消息缺少有效的 contentParts, 已跳过"
                             )
                             continue
 
-                        # === 验证结束，从 contentParts 中提取 text 和 thinking ，并忽略其他内容 ===
+                        # === 验证结束, 从 contentParts 中提取 text, thinking 和 image, 并忽略其他内容 ===
                         text_parts: list[str] = []
                         thinking_parts: list[str] = []
+                        image_display_index = 0
 
                         for part_index, part in enumerate(content_parts):
                             if not isinstance(part, dict):
                                 warnings.append(
-                                    f"消息 {message_id} 的第 {part_index} 个内容片段不是有效对象，已跳过"
+                                    f"消息 {message_id} 的第 {part_index} 个内容片段不是有效对象, 已跳过"
                                 )
                                 continue
 
                             part_type = part.get("type")
 
-                            match part_type:        # 处理不同类型的内容片段，已用match-case语句替代if-elif-else
+                            match part_type:        # 处理不同类型的内容片段, 已用match-case语句替代if-elif-else
                                 case "text":
                                     text = part.get("text")
 
@@ -239,14 +262,90 @@ class ChatboxV2Importer(BaseImporter):
                                     )
 
                                 case "image":
-                                    warnings.append(
-                                        f"消息 {message_id} 的 image 片段暂未处理"
+                                    storage_key = part.get("storageKey")
+
+                                    if not isinstance(storage_key, str) or not storage_key:
+                                        warnings.append(
+                                            f"消息 {message_id} 的第 {part_index} 个 image 片段缺少有效的 storageKey"
+                                        )
+                                        continue
+
+                                    resource = resource_by_storage_key.get(storage_key)
+                                    
+                                    if resource is None:
+                                        warnings.append(
+                                            f"消息 {message_id} 的 image 未找到对应资源: {storage_key}"
+                                        )
+                                        continue
+
+                                    resource_path = resource.get("path")
+
+                                    if not isinstance(resource_path, str) or not resource_path:
+                                        warnings.append(
+                                            f"消息 {message_id} 的 image 资源缺少有效的 path"
+                                        )
+                                        continue
+
+                                    resource_path_obj = PurePosixPath(resource_path)
+                                    
+                                    if (
+                                        resource_path_obj.is_absolute() 
+                                        or ".." in resource_path_obj.parts
+                                        or "\\" in resource_path
+                                    ):
+                                        warnings.append(
+                                            f"消息 {message_id} 的 image 资源路径不安全: {resource_path}"
+                                        )
+                                        continue
+
+                                    if resource_path not in archive_names:
+                                        warnings.append(
+                                            f"消息 {message_id} 的 image 资源文件不存在: {resource_path}"
+                                        )
+                                        continue
+
+                                    mime_type = resource.get("mimeType")
+                                    if not isinstance(mime_type, str) or not mime_type:
+                                        mime_type = None
+
+                                    size = resource.get("size")
+                                    if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+                                        size = None
+
+                                    checksum_data = resource.get("checksum")
+                                    checksum: Checksum | None = None
+
+                                    if isinstance(checksum_data, dict):
+                                        algorithm = checksum_data.get("algorithm")
+                                        value = checksum_data.get("value")
+
+                                        if (
+                                            isinstance(algorithm, str)
+                                            and algorithm
+                                            and isinstance(value, str)
+                                            and value
+                                        ):
+                                            checksum = {
+                                                "algorithm": algorithm,
+                                                "value": value,
+                                            }
+
+                                    attachment = Attachment(
+                                        attach_type="image",
+                                        source_ref=resource_path,
+                                        message_source_id=message_id,
+                                        display_index=image_display_index,
+                                        mime_type=mime_type,
+                                        checksum=checksum,
+                                        size=size,
                                     )
+                                    conversation.attachments.append(attachment)
+                                    image_display_index += 1
 
                                 case _:
                                     warnings.append(
                                         f"消息 {message_id} 的第 {part_index} 个内容类型 "
-                                        f"{part_type!r} 暂不支持，已跳过"
+                                        f"{part_type!r} 暂不支持, 已跳过"
                                     )
 
                         # === 读取其他消息字段并进行 text 和 thinking 的合并 ===
@@ -265,11 +364,20 @@ class ChatboxV2Importer(BaseImporter):
                         timestamp_value = message_data.get("timestamp")
                         timestamp: datetime | None = None
 
-                        if isinstance(timestamp_value, (int, float)):
-                            timestamp = datetime.fromtimestamp(
-                                timestamp_value / 1000,
-                                tz=timezone.utc,
-                            )
+                        if (
+                            isinstance(timestamp_value, (int, float))
+                            and not isinstance(timestamp_value, bool)  # 排除布尔值
+                        ):
+                            try:
+                                timestamp = datetime.fromtimestamp(
+                                    timestamp_value / 1000,
+                                    tz=timezone.utc,
+                                )
+                            except (OSError, OverflowError, ValueError) as exc:
+                                timestamp = None
+                                warnings.append(
+                                    f"消息 {message_id} 的 timestamp 存在问题: {exc}"
+                                )
                         else:
                             warnings.append(
                                 f"消息 {message_id} 缺少有效的 timestamp"
@@ -288,13 +396,24 @@ class ChatboxV2Importer(BaseImporter):
 
                         conversation.messages.append(message)
 
-                        # === 一切正常情况下的迭代器输出 ===
-                        yield ParseResult(
-                            conversation=conversation,
-                            source_id=source_id,
-                            source_ref=session_path,
-                            warnings=warnings,
-                        )
+                        if timestamp is not None:
+                            if earliest_timestamp is None or timestamp < earliest_timestamp:
+                                earliest_timestamp = timestamp
+                            if latest_timestamp is None or timestamp > latest_timestamp:
+                                latest_timestamp = timestamp
+
+
+                    # === 更新对话的时间戳信息 ===
+                    conversation.created_at = earliest_timestamp
+                    conversation.updated_at = latest_timestamp
+
+                    # === 一切正常情况下的迭代器输出 ===
+                    yield ParseResult(
+                        conversation=conversation,
+                        source_id=source_id,
+                        source_ref=session_path,
+                        warnings=warnings,
+                    )
 
                     
 
