@@ -26,7 +26,7 @@ class BaseImporter:
         raise NotImplementedError 
 
     def parse(self, path: Path) -> Iterator[ParseResult]:
-        """解析给定文件，返回一个迭代器，迭代器每次返回一个 ParseResult"""
+        """解析给定文件, 返回一个迭代器, 迭代器每次返回一个 ParseResult"""
         raise NotImplementedError
 
     

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import zipfile
 import json
 from .base import BaseImporter, ParseResult
-from chat_vault.core.models import Conversation, Message, Attachment, Checksum
+from chat_vault.core.models import Conversation, Message, Branch, Attachment, Checksum
 
 """需要维护的全局变量"""
 EMPTY_THINKING_MARKERS = {"", "[REDACTED]"}     # 用于清理思考链的空值标记, 避免在导入时显示无意义的思考内容
@@ -185,6 +185,7 @@ class ChatboxV2Importer(BaseImporter):
                     )
 
                     warnings: list[str] = []
+                    session_results: list[ParseResult] = []
 
                     self._parse_messages(
                         conversation=conversation,
@@ -254,21 +255,137 @@ class ChatboxV2Importer(BaseImporter):
                             warnings=thread_warnings,
                         )
 
-                        # === 线程派生会话的迭代器输出 ===
-                        yield ParseResult(
-                            conversation=thread_conversation,
-                            source_id=thread_conversation.source_id,
-                            source_ref=session_path,
-                            warnings=thread_warnings,
+                        # === 暂存线程派生会话, 等全部会话处理完成后统一输出 ===
+                        session_results.append(
+                            ParseResult(
+                                conversation=thread_conversation,
+                                source_id=thread_conversation.source_id,
+                                source_ref=session_path,
+                                warnings=thread_warnings,
+                            )
                         )
 
-                    # === 正常会话的迭代器输出 ===
-                    yield ParseResult(
-                        conversation=conversation,
-                        source_id=source_id,
-                        source_ref=session_path,
-                        warnings=warnings,
+                    # === 暂存正常会话, 等后续 branch 处理完成后统一输出 ===
+                    session_results.append(
+                        ParseResult(
+                            conversation=conversation,
+                            source_id=source_id,
+                            source_ref=session_path,
+                            warnings=warnings,
+                        )
                     )
+
+                    # === 建立消息到 Conversation 的归属关系 ===
+                    conversation_by_message_id: dict[str, Conversation] = {}
+                    result_by_source_id = {
+                        result.source_id: result
+                        for result in session_results
+                        if result.conversation is not None
+                        and result.source_id is not None
+                    }
+
+                    for result in session_results:
+                        result_conversation = result.conversation
+                        if result_conversation is None:
+                            continue
+
+                        for message in result_conversation.messages:
+                            conversation_by_message_id[message.source_id] = (
+                                result_conversation
+                            )
+
+                    message_forks_hash = session_data.get("messageForksHash", {})
+                    if isinstance(message_forks_hash, dict):
+                        pending_forks = dict(message_forks_hash)
+                        branch_forks_by_source_id: dict[
+                            str, dict[str, object]
+                        ] = {}
+
+                        # 通过分叉锚点传播 branch 所属的 Conversation。
+                        while pending_forks:
+                            resolved_fork = False
+
+                            for fork_message_source_id, fork_data in list(
+                                pending_forks.items()
+                            ):
+                                owner = conversation_by_message_id.get(
+                                    fork_message_source_id
+                                )
+                                if owner is None:
+                                    continue
+
+                                owner_forks = branch_forks_by_source_id.setdefault(
+                                    owner.source_id,
+                                    {},
+                                )
+                                owner_forks[fork_message_source_id] = fork_data
+
+                                if isinstance(fork_data, dict):
+                                    branch_lists = fork_data.get("lists")
+                                    if isinstance(branch_lists, list):
+                                        for branch_data in branch_lists:
+                                            if not isinstance(branch_data, dict):
+                                                continue
+
+                                            branch_messages = branch_data.get(
+                                                "messages"
+                                            )
+                                            if not isinstance(branch_messages, list):
+                                                continue
+
+                                            for branch_message in branch_messages:
+                                                if not isinstance(branch_message, dict):
+                                                    continue
+
+                                                branch_message_id = branch_message.get(
+                                                    "id"
+                                                )
+                                                if (
+                                                    isinstance(branch_message_id, str)
+                                                    and branch_message_id
+                                                ):
+                                                    conversation_by_message_id[
+                                                        branch_message_id
+                                                    ] = owner
+
+                                del pending_forks[fork_message_source_id]
+                                resolved_fork = True
+
+                            if not resolved_fork:
+                                break
+
+                        for unresolved_fork_id in pending_forks:
+                            warnings.append(
+                                f"分叉消息 {unresolved_fork_id} "
+                                "无法找到所属的 Conversation, 已跳过"
+                            )
+
+                        for owner_source_id, owner_forks in (
+                            branch_forks_by_source_id.items()
+                        ):
+                            result = result_by_source_id.get(owner_source_id)
+                            owner = (
+                                result.conversation
+                                if result is not None
+                                else None
+                            )
+                            if result is None or owner is None:
+                                continue
+
+                            self._parse_branch(
+                                conversation=owner,
+                                message_forks_hash=owner_forks,
+                                resource_by_storage_key=resource_by_storage_key,
+                                archive_names=archive_names,
+                                warnings=result.warnings,
+                            )
+                    elif message_forks_hash is not None:
+                        warnings.append(
+                            "会话中的 messageForksHash 不是有效对象, 已忽略"
+                        )
+
+                    # === 所有 branch 处理完成后统一输出 ===
+                    yield from session_results
                     
 
         except (
@@ -286,6 +403,143 @@ class ChatboxV2Importer(BaseImporter):
 
 
 
+    def _parse_branch(
+        self,
+        conversation: Conversation,
+        message_forks_hash: object,
+        resource_by_storage_key: dict[str, dict[str, object]],
+        archive_names: set[str],
+        warnings: list[str],
+    ) -> None:
+        """解析一个分支中的全部消息"""
+
+        # === 进行各种校验 ===
+        if not isinstance(message_forks_hash, dict):
+            warnings.append(
+                "会话中的 messageForksHash 不是有效对象, 已忽略"
+            )
+            return
+
+        for fork_message_source_id, fork_data in message_forks_hash.items():
+            if (
+                not isinstance(fork_message_source_id, str)
+                or not fork_message_source_id
+            ):
+                warnings.append(
+                    "messageForksHash 中存在无效的分叉消息 id, 已跳过"
+                )
+                continue
+
+            if not isinstance(fork_data, dict):
+                warnings.append(
+                    f"分叉消息 {fork_message_source_id} 的数据不是有效对象, 已跳过"
+                )
+                continue
+
+            position = fork_data.get("position")
+            if (
+                not isinstance(position, int)
+                or isinstance(position, bool)
+                or position < 0
+            ):
+                warnings.append(
+                    f"分叉消息 {fork_message_source_id} 缺少有效的 position, 已跳过"
+                )
+                continue
+
+            lists = fork_data.get("lists")
+            if not isinstance(lists, list):
+                warnings.append(
+                    f"分叉消息 {fork_message_source_id} 缺少有效的 lists 列表, 已跳过"
+                )
+                continue
+
+            for list_position, branch_data in enumerate(lists):
+                if not isinstance(branch_data, dict):
+                    warnings.append(
+                        f"分叉消息 {fork_message_source_id} 的第 "
+                        f"{list_position} 个分支不是有效对象, 已跳过"
+                    )
+                    continue
+
+                branch_source_id = branch_data.get("id")
+                if (
+                    not isinstance(branch_source_id, str)
+                    or not branch_source_id
+                ):
+                    warnings.append(
+                        f"分叉消息 {fork_message_source_id} 的第 "
+                        f"{list_position} 个分支缺少有效的 id, 已跳过"
+                    )
+                    continue
+
+                branch_messages = branch_data.get("messages")
+                if not isinstance(branch_messages, list):
+                    warnings.append(
+                        f"分支 {branch_source_id} 缺少有效的 messages 列表, 已跳过"
+                    )
+                    continue
+
+                branch = Branch(
+                    source_id=branch_source_id,
+                    index=list_position,
+                    fork_message_source_id=fork_message_source_id,
+                )
+
+                valid_position = 0
+
+                for message_data in branch_messages:
+                    if not isinstance(message_data, dict):
+                        warnings.append(
+                            f"分支 {branch_source_id} 的第 "
+                            f"{valid_position} 条消息不是有效对象, 已跳过"
+                        )
+                        continue
+
+                    message_id = message_data.get("id")
+                    role = message_data.get("role")
+                    content_parts = message_data.get("contentParts")
+
+                    if not isinstance(message_id, str) or not message_id:
+                        warnings.append(
+                            f"分支 {branch_source_id} 的第 "
+                            f"{valid_position} 条消息缺少有效的 id, 已跳过"
+                        )
+                        continue
+
+                    if not isinstance(role, str) or not role:
+                        warnings.append(
+                            f"分支 {branch_source_id} 的消息 {message_id} "
+                            "缺少有效的 role, 已跳过"
+                        )
+                        continue
+
+                    if not isinstance(content_parts, list):
+                        warnings.append(
+                            f"分支 {branch_source_id} 的消息 {message_id} "
+                            "缺少有效的 contentParts, 已跳过"
+                        )
+                        continue
+
+                    message, attachments = self._parse_one_message(
+                        content_parts=content_parts,
+                        message_id=message_id,
+                        message_data=message_data,
+                        role=role,
+                        position=valid_position,
+                        resource_by_storage_key=resource_by_storage_key,
+                        archive_names=archive_names,
+                        warnings=warnings,
+                    )
+
+                    branch.messages.append(message)
+                    conversation.attachments.extend(attachments)
+                    valid_position += 1
+
+                conversation.branches.append(branch)
+
+
+
     def _parse_messages(
         self,
         conversation: Conversation,
@@ -298,12 +552,14 @@ class ChatboxV2Importer(BaseImporter):
         earliest_timestamp: datetime | None = None
         latest_timestamp: datetime | None = None
 
-        for position, message_data in enumerate(messages):
+        valid_position = 0
+
+        for message_data in messages:
 
             # === 进行各项验证 ===
             if not isinstance(message_data, dict):
                 warnings.append(
-                    f"第 {position} 条消息不是有效对象, 已跳过"
+                    f"第 {valid_position} 条消息不是有效对象, 已跳过"
                 )
                 continue
         
@@ -313,19 +569,19 @@ class ChatboxV2Importer(BaseImporter):
         
             if not isinstance(message_id, str) or not message_id:
                 warnings.append(
-                    f"第 {position} 条消息缺少有效的 id, 已跳过"
+                    f"第 {valid_position} 条消息缺少有效的 id, 已跳过"
                 )
                 continue
         
             if not isinstance(role, str) or not role:
                 warnings.append(
-                    f"第 {position} 条消息缺少有效的 role, 已跳过"
+                    f"第 {valid_position} 条消息缺少有效的 role, 已跳过"
                 )
                 continue
         
             if not isinstance(content_parts, list):
                 warnings.append(
-                    f"第 {position} 条消息缺少有效的 contentParts, 已跳过"
+                    f"第 {valid_position} 条消息缺少有效的 contentParts, 已跳过"
                 )
                 continue
         
@@ -335,7 +591,7 @@ class ChatboxV2Importer(BaseImporter):
                 message_id=message_id, 
                 message_data=message_data, 
                 role=role, 
-                position=position, 
+                position=valid_position, 
                 resource_by_storage_key=resource_by_storage_key, 
                 archive_names=archive_names, 
                 warnings=warnings
@@ -346,6 +602,7 @@ class ChatboxV2Importer(BaseImporter):
         
             conversation.messages.append(message)
             conversation.attachments.extend(attachments)
+            valid_position += 1
         
             if message.timestamp is not None:
                 if earliest_timestamp is None or message.timestamp < earliest_timestamp:
@@ -635,7 +892,3 @@ class ChatboxV2Importer(BaseImporter):
         )
 
         return attachment
-
-
-
-
