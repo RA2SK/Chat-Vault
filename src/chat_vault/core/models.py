@@ -1,4 +1,10 @@
-"""整个程序使用的核心模型, 但不涉及具体实现"""
+"""
+整个程序使用的核心模型, 但不涉及具体实现
+内容域内具体的对应关系是: 
+Conversation 与 Branch 1:N, Branch 与 Message 1:N, 
+Branch 与 Attachment 1:N, Attachment 与 Message N:1,
+AdminMark 和 Comment 与 Message 或 Conversation 的关系待定
+"""
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -14,72 +20,77 @@ class Checksum(TypedDict):                          # 定义保存去重校验�
 class Conversation:
     """对话模型, 代表一次完整的对话, 包括主链和消息级分支"""
 
-    source_id: str                                  # 备份包内唯一标识, 幂等键
+    source_id: str                                  # 幂等键, thread 的对应值为 {source_id}::thread::{thread_id}
     title: str
 
     source_archive: str | None = None               # 原始备份文件在存档目录当中的文件名, 由 import_service 填写
     source_entry: str | None = None                 # 会话在原始备份文件内的相对路径, 由适配器填写
     source_type: str = "chatbox"                    # "chatbox" | "cherry studio" | "other"
-    id: int | None = None
-    created_at: datetime | None = None              # 由适配器根据首条消息计算
-    updated_at: datetime | None = None              # 由适配器根据末条消息计算
+    id: int | None = None                           
+    created_at: datetime | None = None              # 非权威数据, 由适配器根据 Branch 计算, 权威数据来自 message.timestamp
+    updated_at: datetime | None = None              # 非权威数据, 由适配器根据 Branch 计算, 权威数据来自 message.timestamp
     is_published: bool = False
     import_batch: int | None = None                 # -> ImportBatch.id
-    messages: list["Message"] = field(default_factory=list)
-    branches: list["Branch"] = field(default_factory=list)
-    attachments: list["Attachment"] = field(default_factory=list)
+    
+    branches: list["Branch"] = field(default_factory=list)      # 只和 Branch 对接
+
 
 @dataclass
 class Message:
-    """消息模型, 表示一次对话中的一条消息"""
+    """消息模型, 表示一条链中的一条消息"""
 
-    source_id: str                                  
+    source_id: str                                  # 幂等键
     role: str                                       # "user" | "assistant" | "system"
-    content: str                                    # 正文 Markdown, 已合并并清洗 text 片段
-    position: int                                   # 在所属链中的序号
+    content: str                                    # 正文内容
+    position: int                                   # 在所属 Branch 中的序号, 不等同于输入的原始数据中的同名字段
 
-    thinking: str = ""                              # 思考链, 导入时清洗, 默认不展示
+    thinking: str = ""                              # 思考内容, 导入时清洗, 默认不展示
     model: str | None = None                        # 生成该消息的模型名
     id: int | None = None
-    conversation_id: int | None = None
-    timestamp: datetime | None = None
-    branch_id: int | None = None                    # None = 主链；非空 = 属于某分支
+    timestamp: datetime | None = None               
+    branch_id: int | None = None                    # 由所属 Branch 回填, 禁止依赖 Conversation
+
 
 @dataclass
 class Branch:
-    """分支模型, 仅表示消息级分支, 即 messageForksHash。"""
+    """消息链模型, 包含主链和 messageForksHash 产生的历史分支"""
 
-    source_id: str
+    source_id: str                                  # 幂等键; 主链的对应值为 {session_id}::main
     index: int
-    fork_message_source_id: str
+    fork_message_source_id: str | None = None       # 主链为 None，其他链指向锚点消息
 
-    is_current: bool = False    
+    created_at: datetime | None = None              # 非权威数据, 由适配器根据时间戳最小的消息计算, 权威数据来自 message.timestamp
+    updated_at: datetime | None = None              # 非权威数据, 由适配器根据时间戳最大的消息计算, 权威数据来自 message.timestamp
+    is_current: bool = False                        # 当前链; 导入的主链设为 True
     id: int | None = None
-    conversation_id: int | None = None
+    conversation_id: int | None = None              
+
     messages: list[Message] = field(default_factory=list)
+    attachments: list["Attachment"] = field(default_factory=list)
+
 
 @dataclass
 class Attachment:
-    """附件模型类, 表示一次对话中的一个附件"""
+    """附件模型, 表示一条链中的一个附件"""
 
+    message_source_id: str                          # 过渡用, 输入阶段标定附件出现在哪条消息, 入库后被 message_id 取代
     attach_type: str                                # "image" | "file" | "other"
     source_ref: str                                 # 资源引用标识, 禁止绝对路径
 
-    message_source_id: str | None = None            # 出现在哪条消息
-    display_index: int | None = None                # 在该消息内的展示顺序
-
-    display_name: str | None = None
-    mime_type: str | None = None
+    display_name: str | None = None                 
+    mime_type: str | None = None                    
     checksum: Checksum | None = None                # 资源去重
     size: int | None = None                         # 资源大小, 单位为字节
 
-    id: int | None = None                           
-    conversation_id: int | None = None              # 不在输入适配器处理, 由嵌套关系回填
-    message_id: int | None = None                   # 不在输入适配器处理, 由 message_source_id 解析后回填
+    id: int | None = None
+    branch_id: int | None = None                    # 由所属 Branch 回填
+    message_id: int | None = None                   # 由 message_source_id 解析后回填
+   
 
 @dataclass
 class Comment:
-    """评论模型类, 表示一次对话中的一条评论 """
+    """评论模型, 表示一条评论 """
+
     conversation_id: int
     content: str
     created_at: datetime
@@ -90,9 +101,11 @@ class Comment:
     selection_start: int | None = None
     selection_end: int | None = None
 
+
 @dataclass
 class AdminMark:
-    """管理员标记模型类, 用于代表管理员用户对对话进行的标记"""
+    """管理员标记模型, 用于代表管理员用户对对话进行的标记"""
+
     conversation_id: int
     message_id: int
     mark_type: str                                  # "highlight" | "delete" | "other"
@@ -110,7 +123,7 @@ class AdminMark:
 
 @dataclass
 class User:
-    """存储用户信息的模型类, 包括普通用户和管理员"""
+    """用户信息模型, 包括普通用户和管理员"""
 
     username: str
     password_hash: str                              # 禁止明文

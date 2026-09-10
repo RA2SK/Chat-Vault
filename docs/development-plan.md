@@ -1,159 +1,44 @@
-# 开发计划
+﻿# 开发计划
 
-## 1. 当前状态
+## 一、更新日志
 
-项目已经完成基础目录规划和 Python 项目配置：
+### 2026-09-10
 
-- 后端采用 `src/chat_vault` 的 src 布局；
-- `pyproject.toml` 管理依赖、构建、pytest 和 Ruff 配置；
-- `core`、`storage`、`adapters`、`utils` 已建立；
-- 前端目录已预留 `api`、`components`、`router` 和 `views`；
-- 测试文件已预留；
-- `private/` 保存本地探查资料和测试备份，不属于共享代码。
+- 重构 `chatbox_v2.py`，完成 Chatbox v2 备份的主要解析链路。
+- 重构 `models.py`，调整 Conversation、Branch、Message 和 Attachment 的关系。
+- 同步修订 `architecture.md`、`importers.md` 和 `models.md`，使文档与当前结构一致。
 
-当前大部分 Python 模块、前端文件和测试文件仍是骨架，后续开发应以可验证的小步骤推进。
+## 三、已发现但尚未完成的内容
 
-## 2. V1 目标
+### 按文件列出
 
-V1 是课程设计和可用基础版本，必须完成：
+- `src/chat_vault/adapters/importers/chatbox_v2.py`
+  - 添加对文件附件的识别、资源索引和提取。
 
-1. 导入 Chatbox ZIP 备份；
-2. 遍历会话目录并读取 `session.json`；
-3. 解析 JSON，提取会话、消息、正文、思考内容和分支；
-4. 转换成统一内部数据模型；
-5. 保存到 SQLite；
-6. 重复导入不产生重复数据；
-7. 保留原始 JSON；
-8. 提供对话列表和详情查询；
-9. 提供本地 CLI；
-10. 提供 Web API 和基础 Web 界面；
-11. 支持管理员发布、隐藏和添加标记；
-12. 支持普通用户浏览公开对话和发表评论。
+- `src/chat_vault/core/models.py`
+  - 根据存储层实际实现继续补充模型关系的入库衔接。
 
-可以简化的内容：完整注册系统、选区级批注、图片的完整展示、复杂全文搜索、实时通信和多用户后台管理。
+- `src/chat_vault/core/import_service.py`
+  - 实现适配器调用、导入结果处理、事务和原始备份归档。
 
-## 3. 推荐开发顺序
+- `src/chat_vault/storage/schema.sql`
+  - 按当前模型关系完成数据库表结构和约束。
 
-### 阶段一：确认模型和输入格式
+- `src/chat_vault/storage/database.py`
+  - 完成数据库连接、初始化和事务支持。
 
-1. 完善统一数据模型；
-2. 使用本地探查脚本确认 Chatbox 备份结构；
-3. 实现 `chatbox_v1.py`；
-4. 用内存数据测试文本、思考内容、时间、角色和分支解析；
-5. 对缺失字段和未知 `contentParts` 类型进行兼容处理。
+- `src/chat_vault/storage/repositories.py`
+  - 完成 Conversation、Branch、Message、Attachment 等对象的持久化和关系回填。
 
-### 阶段二：实现存储
+- `src/chat_vault/core/query_service.py`
+  - 实现对话、分支和消息查询。
 
-1. 确认 `sources`、`conversations`、`messages`、`branches`、`imports` 等实体；
-2. 编写 `schema.sql`；
-3. 实现数据库初始化和连接管理；
-4. 实现 repositories；
-5. 增加唯一约束，保证 `(source_type, source_id)` 幂等；
-6. 编写数据库和重复导入测试。
+- `src/chat_vault/core/permission_service.py`
+  - 实现发布状态、管理员操作和访问权限判断。
 
-### 阶段三：实现导入服务
+- `src/chat_vault/adapters/exporters/`
+  - 实现 CLI、Markdown、Web API 和其他输出逻辑。
 
-1. 连接格式检测、输入适配器和 repository；
-2. 校验统一模型；
-3. 用事务保存对话、消息、分支和原始 JSON；
-4. 记录成功、失败和跳过数量；
-5. 验证导入失败时可以完整回滚。
+### 不属于单个文件的更新内容
 
-### 阶段四：实现 CLI
-
-计划支持：
-
-```bash
-python -m chat_vault.cli import backup.zip
-python -m chat_vault.cli list
-python -m chat_vault.cli show <conversation_id>
-```
-
-CLI 应能完成导入、查看列表、查看详情和检查数据库状态。
-
-### 阶段五：实现 Web API
-
-1. 创建 FastAPI 应用；
-2. 定义请求和响应 schema；
-3. 实现对话列表和详情路由；
-4. 实现评论路由；
-5. 实现管理员发布、隐藏和标记路由；
-6. 将权限判断放在后端服务中，而不是只隐藏前端按钮。
-
-### 阶段六：实现前端
-
-1. 配置 Vue 3、Vite 和 Vue Router；
-2. 实现 API 客户端；
-3. 实现公开对话列表；
-4. 实现对话详情和 Markdown 展示；
-5. 实现思考内容折叠和分支查看；
-6. 实现评论区域；
-7. 实现管理员页面。
-
-### 阶段七：测试、文档和验收
-
-1. 补充导入器、服务、repository 和 API 测试；
-2. 使用真实但不公开的测试样本验证导入；
-3. 验证重复导入不会产生重复数据；
-4. 验证原始 JSON 可以恢复；
-5. 更新 README 和 docs；
-6. 按验收流程进行端到端检查。
-
-## 4. V1 验收流程
-
-```text
-准备 Chatbox ZIP
-  ↓
-执行导入命令
-  ↓
-数据库生成对话和消息
-  ↓
-重复执行导入且不产生重复数据
-  ↓
-CLI 查看对话
-  ↓
-启动 Web API
-  ↓
-前端查看公开列表
-  ↓
-查看详情、Markdown 和分支
-  ↓
-普通用户发表评论
-  ↓
-管理员登录并发布、隐藏或标记内容
-```
-
-## 5. V2 候选功能
-
-V1 稳定后再考虑：
-
-- Cherry Studio 输入适配器；
-- Markdown 文件和静态网站导出；
-- 图片、附件和工具调用展示；
-- 消息级搜索和全文搜索；
-- 行内批注；
-- 完整用户系统；
-- PostgreSQL 支持；
-- 导入历史和版本比较。
-
-## 6. 明确不做
-
-当前不计划：
-
-- 重新实现 Chatbox；
-- 在线 AI 对话；
-- 在线编辑 AI 对话；
-- 多人协同编辑；
-- 复杂实时通信；
-- 一开始支持所有 AI 客户端；
-- 一开始实现复杂插件系统。
-
-## 7. 给开发助手的约束
-
-每次修改前先判断所属层：输入适配、核心领域、数据库、输出适配或前端。不要跨层复制逻辑。
-
-- 新外部格式：先实现适配器，再转换为统一模型；
-- 新展示方式：复用核心查询服务，不复制业务规则；
-- 数据库改动：先改结构和约束，再同步 repository、service、API；
-- 不确定字段用途时先保留原始数据；
-- 每次改动都检查是否破坏幂等导入、数据恢复能力或未来扩展性。
+- 添加跨文件的统一日志处理模块，使适配器、导入服务、存储层和输出层使用一致的日志接口。
