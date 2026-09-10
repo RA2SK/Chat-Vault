@@ -78,7 +78,7 @@ ZIP 备份
   → 提交事务
 ```
 
-适配器需要兼容缺失字段、未知字段、旧版 `reasoningContent`、`contentParts` 中未知类型、`messageForksHash` 和 `threads`。未知内容类型不应导致整个导入失败，应记录警告并尽量保留原始数据。
+适配器需要兼容缺失字段、未知字段、`contentParts` 中未知类型、`messageForksHash` 和 `threads`。消息级旧版 `reasoningContent` 不在当前适配范围内；思考链仅处理 `contentParts` 中的 `reasoning` 片段。未知内容类型不应导致整个导入失败，应记录警告并按输入适配器设计决定是否保留。
 
 ## 5. 幂等导入
 

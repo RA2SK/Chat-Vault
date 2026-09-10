@@ -9,14 +9,14 @@ from .base import BaseImporter, ParseResult
 from chat_vault.core.models import Conversation, Message, Branch, Attachment, Checksum
 
 """需要维护的全局变量"""
-EMPTY_THINKING_MARKERS = {"", "[REDACTED]"}     # 用于清理思考链的空值标记, 避免在导入时显示无意义的思考内容
+EMPTY_THINKING_MARKERS = {"", "[redacted]"}     # 用于清理思考链的空值标记, 避免在导入时显示无意义的思考内容
 
 
 class ChatboxV2Importer(BaseImporter):
     format_key = "chatbox.v2"
 
     def detect(self, path: Path) -> bool:
-        """判断文件是否为 Chatbox v2 备份。"""
+        """判断文件是否为 Chatbox v2 备份"""
 
         if not zipfile.is_zipfile(path):
             return False
@@ -53,7 +53,7 @@ class ChatboxV2Importer(BaseImporter):
 
 
     def parse(self, path: Path) -> Iterator[ParseResult]:
-        """解析 Chatbox 备份, 并逐个产出解析结果。"""
+        """解析 Chatbox 备份, 并逐个产出解析结果"""
 
         try:
             with zipfile.ZipFile(path) as archive:
@@ -201,13 +201,13 @@ class ChatboxV2Importer(BaseImporter):
 
                     if not isinstance(threads, list):
                         warnings.append(
-                            "会话中的 threads 不是有效列表，已忽略"
+                            "会话中的 threads 不是有效列表, 已忽略"
                         )
                     else:
                         for thread_position, thread_data in enumerate(threads):
                             if not isinstance(thread_data, dict):
                                 warnings.append(
-                                    f"第 {thread_position} 个 thread 不是有效对象，已跳过"
+                                    f"第 {thread_position} 个 thread 不是有效对象, 已跳过"
                                 )
                                 continue
 
@@ -217,19 +217,19 @@ class ChatboxV2Importer(BaseImporter):
 
                             if not isinstance(thread_id, str) or not thread_id:
                                 warnings.append(
-                                    f"第 {thread_position} 个 thread 缺少有效的 id，已跳过"
+                                    f"第 {thread_position} 个 thread 缺少有效的 id, 已跳过"
                                 )
                                 continue
 
                             if not isinstance(thread_name, str):
                                 warnings.append(
-                                    f"thread {thread_id} 缺少有效的 name，已跳过"
+                                    f"thread {thread_id} 缺少有效的 name, 已跳过"
                                 )
                                 continue
 
                             if not isinstance(thread_messages, list):
                                 warnings.append(
-                                    f"thread {thread_id} 缺少有效的 messages 列表，已跳过"
+                                    f"thread {thread_id} 缺少有效的 messages 列表, 已跳过"
                                 )
                                 continue
 
@@ -301,7 +301,7 @@ class ChatboxV2Importer(BaseImporter):
                             str, dict[str, object]
                         ] = {}
 
-                        # 通过分叉锚点传播 branch 所属的 Conversation。
+                        # 通过分叉锚点传播 branch 所属的 Conversation
                         while pending_forks:
                             resolved_fork = False
 
@@ -384,6 +384,13 @@ class ChatboxV2Importer(BaseImporter):
                             "会话中的 messageForksHash 不是有效对象, 已忽略"
                         )
 
+                    # 分支解析完成后，按主链及全部分支消息更新会话时间范围。
+                    for result in session_results:
+                        if result.conversation is not None:
+                            self._update_conversation_timestamps(
+                                result.conversation
+                            )
+
                     # === 所有 branch 处理完成后统一输出 ===
                     yield from session_results
                     
@@ -406,19 +413,12 @@ class ChatboxV2Importer(BaseImporter):
     def _parse_branch(
         self,
         conversation: Conversation,
-        message_forks_hash: object,
+        message_forks_hash: dict[str, object],
         resource_by_storage_key: dict[str, dict[str, object]],
         archive_names: set[str],
         warnings: list[str],
     ) -> None:
         """解析一个分支中的全部消息"""
-
-        # === 进行各种校验 ===
-        if not isinstance(message_forks_hash, dict):
-            warnings.append(
-                "会话中的 messageForksHash 不是有效对象, 已忽略"
-            )
-            return
 
         for fork_message_source_id, fork_data in message_forks_hash.items():
             if (
@@ -433,17 +433,6 @@ class ChatboxV2Importer(BaseImporter):
             if not isinstance(fork_data, dict):
                 warnings.append(
                     f"分叉消息 {fork_message_source_id} 的数据不是有效对象, 已跳过"
-                )
-                continue
-
-            position = fork_data.get("position")
-            if (
-                not isinstance(position, int)
-                or isinstance(position, bool)
-                or position < 0
-            ):
-                warnings.append(
-                    f"分叉消息 {fork_message_source_id} 缺少有效的 position, 已跳过"
                 )
                 continue
 
@@ -480,6 +469,8 @@ class ChatboxV2Importer(BaseImporter):
                     )
                     continue
 
+                # Branch 列表是展平表示：index 仅对应当前 fork 组的原始
+                # lists[] 下标，跨组可能重复；锚点与分支归属由源 ID 关联。
                 branch = Branch(
                     source_id=branch_source_id,
                     index=list_position,
@@ -538,6 +529,27 @@ class ChatboxV2Importer(BaseImporter):
 
                 conversation.branches.append(branch)
 
+
+
+    def _update_conversation_timestamps(
+        self,
+        conversation: Conversation,
+    ) -> None:
+        """更新时间戳的辅助函数"""
+        
+        timestamps = [
+            message.timestamp
+            for message in conversation.messages
+            if message.timestamp is not None
+        ]
+        timestamps.extend(
+            message.timestamp
+            for branch in conversation.branches
+            for message in branch.messages
+            if message.timestamp is not None
+        )
+        conversation.created_at = min(timestamps) if timestamps else None
+        conversation.updated_at = max(timestamps) if timestamps else None
 
 
     def _parse_messages(
@@ -631,7 +643,7 @@ class ChatboxV2Importer(BaseImporter):
         
         text_parts: list[str] = []
         thinking_parts: list[str] = []
-        attachments: list[Attachment] = []                      # 过渡，避免对外部的 conversation 产生依赖
+        attachments: list[Attachment] = []                      # 过渡, 避免对外部的 conversation 产生依赖
         image_display_index = 0
         
         for part_index, part in enumerate(content_parts):       # 循环解析每个 contentPart
@@ -780,7 +792,7 @@ class ChatboxV2Importer(BaseImporter):
         if isinstance(thinking, str):
             cleaned_thinking = thinking.strip()
         
-            if cleaned_thinking not in EMPTY_THINKING_MARKERS:
+            if cleaned_thinking.lower() not in EMPTY_THINKING_MARKERS:
                 thinking_parts.append(cleaned_thinking)
         
         else:
