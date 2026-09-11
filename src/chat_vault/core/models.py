@@ -39,6 +39,7 @@ class Conversation:
 class Message:
     """消息模型, 表示一条链中的一条消息"""
 
+    # === 输入层 ===
     source_id: str                                  # 幂等键
     role: str                                       # "user" | "assistant" | "system"
     content: str                                    # 正文内容
@@ -46,9 +47,13 @@ class Message:
 
     thinking: str = ""                              # 思考内容, 导入时清洗, 默认不展示
     model: str | None = None                        # 生成该消息的模型名
-    id: int | None = None
     timestamp: datetime | None = None               
+
+    # === 业务层 ===
+    id: int | None = None
     branch_id: int | None = None                    # 由所属 Branch 回填, 禁止依赖 Conversation
+    edited_at: datetime | None = None               # 最后编辑时间
+    edited_by: int | None = None
 
 
 @dataclass
@@ -89,34 +94,45 @@ class Attachment:
 
 @dataclass
 class Comment:
-    """评论模型, 表示一条评论 """
+    """评论模型, 表示用户对消息或对话的评论"""
 
     conversation_id: int
+    message_id: int
+    target_type: str                                # "conversation" | "message"
+
     content: str
     created_at: datetime
+    created_by: int | None = None
+    nickname: str = "anonymous"
 
     is_deleted: bool = False                        # 管理员软删除
-    nickname: str = "anonymous"
-    message_id: int | None = None
-    selection_start: int | None = None
-    selection_end: int | None = None
 
 
 @dataclass
 class AdminMark:
-    """管理员标记模型, 用于代表管理员用户对对话进行的标记"""
+    """管理员标记模型, 用于代表管理员用户对消息进行的标记"""
 
-    conversation_id: int
     message_id: int
-    mark_type: str                                  # "highlight" | "delete" | "other"
+    mark_type: str                                  # "highlight" | "pin" | "other"
     created_at: datetime
     created_by: int                                 # -> User.id
 
-
     is_deleted: bool = False                        # 管理员软删除
-    note: str | None = None
     id: int | None = None
 
+
+@dataclass
+class MessageRevision:
+    """消息历史模型, 用于记录消息的编辑记录和迭代版本"""
+
+    message_id: int
+    revision_no: int                                # 迭代版本
+    content: str                                    # 本迭代的正文内容
+    thinking: str                                   # 本迭代的思考内容
+    created_at: datetime
+    created_by: int
+    reason: str | None = None                       # 管理员的修改备注
+    id: int | None = None
 
 
 # ============ 管理域 ============
@@ -128,6 +144,7 @@ class User:
     username: str
     password_hash: str                              # 禁止明文
     created_at: datetime
+
     id: int | None = None
     role: str = "admin"
 

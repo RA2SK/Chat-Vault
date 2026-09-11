@@ -7,15 +7,13 @@ import zipfile
 import json
 
 from .base import BaseImporter, ParseResult
+from .source_ids import with_source_namespace
 from chat_vault.core.models import Attachment, Branch, Checksum, Conversation, Message
-
-"""需要维护的全局变量"""
-EMPTY_THINKING_MARKERS = {"", "[redacted]"}     # 用于清理思考链的空值标记, 避免在导入时显示无意义的思考内容
-
-
 
 class ChatboxV2Importer(BaseImporter):
     format_key = "chatbox.v2"
+    source_type = "chatbox"                         # 用于拼接 source_id 的前缀
+    empty_thinking_markers = {"", "[redacted]"}     # 思考链的无效内容标记
 
     def detect(self, path: Path) -> bool:
         """判断文件是否为 Chatbox v2 备份"""
@@ -246,13 +244,17 @@ class ChatboxV2Importer(BaseImporter):
 
                     # === 从列表中读取一个元素 ===
                     item_source_id = cast(str, session_item["source_id"])
+                    namespaced_item_source_id = with_source_namespace(
+                        self.source_type,
+                        item_source_id,
+                    )
                     item_title = cast(str, session_item["title"])
                     item_source_entry = cast(str, session_item["source_entry"])
                     item_messages = cast(list[object], session_item["messages"])
                     item_forks = session_item["message_forks_hash"]
 
                     conversation = Conversation(
-                        source_id=item_source_id,
+                        source_id=namespaced_item_source_id,
                         title=item_title,
                         source_entry=item_source_entry,
                     )
@@ -303,7 +305,7 @@ class ChatboxV2Importer(BaseImporter):
                     # 每个元素独立解析之后逐个 yield
                     yield ParseResult(
                         conversation=conversation,
-                        source_id=item_source_id,
+                        source_id=namespaced_item_source_id,
                         source_ref=item_source_entry,
                         warnings=warnings,
                     )
@@ -336,6 +338,16 @@ class ChatboxV2Importer(BaseImporter):
         is_current: bool = False,
     ) -> Branch:
         """循环解析单条消息链, 调用 _parse_message 和 _parse_attachment, 返回分支链对象 Branch """
+
+        branch_source_id = with_source_namespace(
+            self.source_type,
+            branch_source_id,
+        )
+        if fork_message_source_id is not None:
+            fork_message_source_id = with_source_namespace(
+                self.source_type,
+                fork_message_source_id,
+            )
 
         branch = Branch(
             source_id=branch_source_id,
@@ -445,7 +457,11 @@ class ChatboxV2Importer(BaseImporter):
                     resolved_fork = True
                     continue
 
-                if fork_message_source_id not in known_message_ids: # 分支的头不在当前对话内
+                namespaced_fork_message_source_id = with_source_namespace(
+                    self.source_type,
+                    fork_message_source_id,
+                )
+                if namespaced_fork_message_source_id not in known_message_ids: # 分支的头不在当前对话内
                     continue
 
                 if not isinstance(fork_data, dict):
@@ -558,6 +574,7 @@ class ChatboxV2Importer(BaseImporter):
                     self._parse_message_part_reasoning(
                         thinking=thinking,
                         thinking_parts=thinking_parts,
+                        empty_thinking_markers=self.empty_thinking_markers,
                         message_id=message_id,
                         part_index=part_index,
                         warnings=warnings,
@@ -617,8 +634,15 @@ class ChatboxV2Importer(BaseImporter):
         else:
             warnings.append(f"消息 {message_id} 缺少有效的 timestamp")
 
+        namespaced_message_id = with_source_namespace(
+            self.source_type,
+            message_id,
+        )
+        for attachment in attachments:
+            attachment.message_source_id = namespaced_message_id
+
         message = Message(
-            source_id=message_id,
+            source_id=namespaced_message_id,
             role=role,
             content=text_content,
             position=position,
@@ -677,6 +701,7 @@ class ChatboxV2Importer(BaseImporter):
         self,
         thinking: object,
         thinking_parts: list[str],
+        empty_thinking_markers: set[str],
         message_id: str,
         part_index: int,
         warnings: list[str],
@@ -685,7 +710,7 @@ class ChatboxV2Importer(BaseImporter):
 
         if isinstance(thinking, str):
             cleaned_thinking = thinking.strip()
-            if cleaned_thinking.lower() not in EMPTY_THINKING_MARKERS:
+            if cleaned_thinking.lower() not in empty_thinking_markers:
                 thinking_parts.append(cleaned_thinking)
         else:
             warnings.append(
