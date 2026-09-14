@@ -1,0 +1,2 @@
+class ChatVaultError(Exception):
+    pass
