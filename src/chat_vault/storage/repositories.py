@@ -313,6 +313,24 @@ class ConversationRepository:
         )
 
 
+    def list_all(self) -> list[Conversation]:
+        """查询所有对话。"""
+
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM conversations
+            ORDER BY updated_at DESC, id DESC
+            """
+        ).fetchall()
+
+        conversations: list[Conversation] = []
+        for row in rows:
+            conversations.append(self._row_to_conversation(row))
+
+        return conversations
+
+
     def list_published(self) -> list[Conversation]:
         """查询所有已发布的对话"""
 

@@ -28,7 +28,6 @@ def get_connection(
     return connection
 
 
-
 def initialize_database(
     connection: sqlite3.Connection,
     schema_path: Path = DEFAULT_SCHEMA_PATH,
@@ -37,7 +36,6 @@ def initialize_database(
 
     schema_sql = schema_path.read_text(encoding="utf-8-sig")
     connection.executescript(schema_sql)
-
 
 
 @contextmanager
@@ -53,7 +51,6 @@ def transaction(
         raise
     else:
         connection.commit()
-
 
 
 def close_connection(connection: sqlite3.Connection) -> None:
