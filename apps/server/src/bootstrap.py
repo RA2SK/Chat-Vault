@@ -12,9 +12,8 @@ from modules.repositories.repositories import (
     ImportBatchRepository,
     MessageRepository,
 )
-from modules.services.import_service import ImportService
-from modules.services.permission_service import PermissionService
-from modules.services.query_service import QueryService
+from modules.services.importing import ImportService
+from modules.services.querying import QueryService
 
 
 @dataclass
@@ -24,7 +23,6 @@ class ServiceContainer:
     connection: sqlite3.Connection
     import_service: ImportService
     query_service: QueryService
-    permission_service: PermissionService
 
     @classmethod
     def create(
@@ -66,7 +64,6 @@ class ServiceContainer:
             connection=connection,
             import_service=import_service,
             query_service=query_service,
-            permission_service=PermissionService(),
         )
 
 

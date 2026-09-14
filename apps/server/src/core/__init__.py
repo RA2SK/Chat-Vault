@@ -22,7 +22,6 @@ __all__ = [
     "ImportService",
     "Message",
     "MessageRevision",
-    "PermissionService",
     "QueryService",
     "ServiceContainer",
     "User",
@@ -31,19 +30,15 @@ __all__ = [
 
 def __getattr__(name: str) -> object:
     if name == "ImportService":
-        from modules.services.import_service import ImportService
+        from modules.services.importing import ImportService
 
         return ImportService
-    if name == "PermissionService":
-        from modules.services.permission_service import PermissionService
-
-        return PermissionService
     if name in {"ConversationDetail", "QueryService"}:
-        from modules.services.query_service import ConversationDetail, QueryService
+        from modules.services.querying import ConversationDetail, QueryService
 
         return {"ConversationDetail": ConversationDetail, "QueryService": QueryService}[name]
     if name == "ServiceContainer":
-        from core.services import ServiceContainer
+        from bootstrap import ServiceContainer
 
         return ServiceContainer
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

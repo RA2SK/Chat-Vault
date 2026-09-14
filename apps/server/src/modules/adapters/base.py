@@ -1,4 +1,4 @@
-"""定义输入适配器的接口并承载返回的ParseResult"""
+"""定义输入适配器需要遵循的基础结构和统一调用方式"""
 
 from dataclasses import dataclass, field
 from pathlib import Path
