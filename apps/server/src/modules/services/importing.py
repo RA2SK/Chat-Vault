@@ -6,6 +6,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Iterator
 
+from core.enums import ImportStatus, SourceType
 from core.models import (
     Attachment,
     Branch,
@@ -14,13 +15,25 @@ from core.models import (
     Message,
 )
 from modules.adapters.base import BaseImporter, ParseResult
-from modules.repositories.repositories import (
+from modules.repositories import (
     AttachmentRepository,
     BranchRepository,
     ConversationRepository,
     ImportBatchRepository,
     MessageRepository,
 )
+
+
+def _to_source_type(raw: object) -> SourceType:
+    """把适配器声明的来源名称收敛为 SourceType, 无法识别时归入 other"""
+
+    if isinstance(raw, SourceType):
+        return raw
+
+    try:
+        return SourceType(str(raw))
+    except ValueError:
+        return SourceType.OTHER
 
 
 @dataclass
@@ -56,7 +69,7 @@ class ImportService:
             )
 
         results = importer.parse(path)
-        source_type=getattr(importer, "source_type", "unknown")
+        source_type = _to_source_type(getattr(importer, "source_type", None))
 
         return self.import_results(
             path=path,
@@ -71,7 +84,7 @@ class ImportService:
         path: Path,
         results: Iterator[ParseResult],
         format_key: str = "unknown",
-        source_type: str = "unknown",
+        source_type: SourceType = SourceType.OTHER,
     ) -> ImportBatch:
         """处理输入适配器产生的解析结果"""
 
@@ -90,7 +103,7 @@ class ImportService:
 
         except Exception as exc:
 
-            import_batch.status = "failed"
+            import_batch.status = ImportStatus.FAILED
             import_batch.error_summary = str(exc)
             import_batch.finished_at = datetime.now(timezone.utc)
             self.import_batch_repository.update(import_batch)
@@ -106,7 +119,7 @@ class ImportService:
         self,
         path: Path,
         format_key: str,
-        source_type: str,
+                source_type: SourceType,
     ) -> ImportBatch:
         """创建处于初始状态的导入批次"""
 
@@ -117,7 +130,7 @@ class ImportService:
             file_name=path.name,
             file_hash=file_hash,
             started_at=import_time,
-            status="success",
+                    status=ImportStatus.SUCCESS,
             total_count=0,
             success_count=0,
             failed_count=0,
@@ -183,21 +196,14 @@ class ImportService:
 
         self._validate_conversation(conversation)
 
-        if import_batch.id is None:
-            raise ValueError("保存对话前必须存在 import_batch.id")
-
-        conversation.import_batch = import_batch.id
+        conversation.import_batch_id = import_batch.id
         existing = self._find_existing_conversation(conversation)
 
         if existing is None:
             self.conversation_repository.create(conversation)
         else:
-            conversation.id = existing.id
             conversation.is_published = existing.is_published       # 发布状态属于管理域，重复导入不能因为导入模型的默认值而取消发布
             self.conversation_repository.update(conversation)
-
-        if conversation.id is None:
-            raise RuntimeError("保存对话后未获得 conversation.id")
 
         for branch in conversation.branches:                        # 逐个处理分支链
             self._save_branch(branch, conversation)
@@ -210,20 +216,12 @@ class ImportService:
     ) -> None:
         """保存或复用一个对话分支, 并保存其消息和附件"""
 
-        if conversation.id is None:
-            raise ValueError("保存链前必须存在 conversation.id")
-
-        branch.conversation_id = conversation.id
         existing = self.branch_repository.get_by_source_id(branch.source_id)
 
         if existing is None:
-            self.branch_repository.create(branch)
-        else:
-            branch.id = existing.id
-            branch.conversation_id = conversation.id
-
-        if branch.id is None:
-            raise RuntimeError("保存链后未获得 branch.id")
+            self.branch_repository.create(branch, conversation.source_id)
+        elif branch.is_current != existing.is_current:
+            branch.is_current = existing.is_current   # 当前链标记属管理域，重复导入不覆盖
 
         for message in branch.messages:                             # 逐个处理消息
             self._save_message(message, branch)
@@ -239,20 +237,12 @@ class ImportService:
     ) -> None:
         """保存或更新一条消息"""
 
-        if branch.id is None:
-            raise ValueError("保存消息前必须存在 branch.id")
-
-        message.branch_id = branch.id
         existing = self.message_repository.get_by_source_id(message.source_id)
 
         if existing is None:
-            self.message_repository.create(message)
+            self.message_repository.create(message, branch.source_id)
         else:
-            message.id = existing.id
             self.message_repository.update(message)
-
-        if message.id is None:
-            raise RuntimeError("保存消息后未获得 message.id")
 
 
     def _save_attachment(
@@ -262,10 +252,6 @@ class ImportService:
     ) -> None:
         """保存或更新一个附件, 并将其绑定到对应消息"""
 
-        if branch.id is None:
-            raise ValueError("保存附件前必须存在 branch.id")
-
-        attachment.branch_id = branch.id
         message = next(
             (
                 item
@@ -274,18 +260,17 @@ class ImportService:
             ),
             None,
         )
-        if message is None or message.id is None:
+        if message is None:
             raise ValueError(
                 "附件引用的消息不存在: "
                 f"{attachment.message_source_id}"
             )
 
-        attachment.message_id = message.id
         existing = next(
             (
                 item
                 for item in self.attachment_repository.list_by_message(
-                    message.id
+                    attachment.message_source_id
                 )
                 if item.source_ref == attachment.source_ref
             ),
@@ -295,11 +280,7 @@ class ImportService:
         if existing is None:
             self.attachment_repository.create(attachment)
         else:
-            attachment.id = existing.id
             self.attachment_repository.update(attachment)
-
-        if attachment.id is None:
-            raise RuntimeError("保存附件后未获得 attachment.id")
 
 
     def _validate_conversation(self, conversation: Conversation) -> None:
@@ -385,11 +366,11 @@ class ImportService:
         import_batch.finished_at = datetime.now(timezone.utc)
 
         if import_batch.failed_count == 0:
-            import_batch.status = "success"
+            import_batch.status = ImportStatus.SUCCESS
         elif import_batch.success_count == 0:
-            import_batch.status = "failed"
+            import_batch.status = ImportStatus.FAILED
         else:
-            import_batch.status = "partial"
+            import_batch.status = ImportStatus.PARTIAL
 
 
     def _record_warning(

@@ -1,17 +1,17 @@
-"""核心业务服务的组合入口, 负责创建数据库连接、Repository 和核心服务对象等, 避免输出端重复编写组装代码"""
+"""集中创建数据库连接, 适配器, 仓储和业务服务, 并完成具体实现之间的依赖组装"""
 
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from modules.repositories.database import get_connection, initialize_database
-from modules.repositories.repositories import (
+from modules.repositories import (
     AttachmentRepository,
     BranchRepository,
     ConversationRepository,
     ImportBatchRepository,
     MessageRepository,
 )
+from modules.repositories.database import get_connection, initialize_database
 from modules.services.importing import ImportService
 from modules.services.querying import QueryService
 

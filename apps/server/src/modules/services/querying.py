@@ -8,7 +8,7 @@ from core.models import (
     Conversation,
     Message,
 )
-from modules.repositories.repositories import (
+from modules.repositories import (
     AttachmentRepository,
     BranchRepository,
     ConversationRepository,
@@ -18,12 +18,16 @@ from modules.repositories.repositories import (
 
 @dataclass
 class ConversationDetail:
-    """一个完整的对话详情及其关联内容"""
+    """一个完整的对话详情及其关联内容
+
+    两张映射表都以内容域的 source_id 为键:
+    messages 以 Branch.source_id 为键, attachments 以 Message.source_id 为键
+    """
 
     conversation: Conversation
     branches: list[Branch]
-    messages: dict[int, list[Message]]
-    attachments: dict[int, list[Attachment]]
+    messages: dict[str, list[Message]]
+    attachments: dict[str, list[Attachment]]
 
 
 @dataclass
@@ -47,41 +51,35 @@ class QueryService:
         return self.conversation_repository.list_published()
 
 
-    def get_conversation(self, conversation_id: int) -> Conversation | None:
-        """根据数据库 ID 获取一个对话的基本信息"""
+    def get_conversation(self, conversation_source_id: str) -> Conversation | None:
+        """根据来源 ID 获取一个对话的基本信息"""
 
-        return self.conversation_repository.get_by_id(conversation_id)
+        return self.conversation_repository.get_by_source_id(conversation_source_id)
 
 
     def get_conversation_detail(
         self,
-        conversation_id: int,
+        conversation_source_id: str,
     ) -> ConversationDetail | None:
         """获取对话、分支、消息和附件组成的完整详情"""
 
-        conversation = self.get_conversation(conversation_id)
+        conversation = self.get_conversation(conversation_source_id)
         if conversation is None:
             return None
 
-        branches = self.list_branches(conversation_id)
-        messages: dict[int, list[Message]] = {}
-        attachments: dict[int, list[Attachment]] = {}
+        branches = self.list_branches(conversation_source_id)
+        messages: dict[str, list[Message]] = {}
+        attachments: dict[str, list[Attachment]] = {}
 
         for branch in branches:
-            if branch.id is None:
-                continue
-
-            branch_messages = self.list_messages(branch.id)
-            messages[branch.id] = branch_messages
+            branch_messages = self.list_messages(branch.source_id)
+            messages[branch.source_id] = branch_messages
             branch.messages = branch_messages
 
             branch_attachments: list[Attachment] = []
             for message in branch_messages:
-                if message.id is None:
-                    continue
-
-                message_attachments = self.list_attachments(message.id)
-                attachments[message.id] = message_attachments
+                message_attachments = self.list_attachments(message.source_id)
+                attachments[message.source_id] = message_attachments
                 branch_attachments.extend(message_attachments)
 
             branch.attachments = branch_attachments
@@ -95,19 +93,19 @@ class QueryService:
         )
 
 
-    def list_branches(self, conversation_id: int) -> list[Branch]:
+    def list_branches(self, conversation_source_id: str) -> list[Branch]:
         """获取某个对话下的分支列表"""
 
-        return self.branch_repository.list_by_conversation(conversation_id)
+        return self.branch_repository.list_by_conversation(conversation_source_id)
 
 
-    def list_messages(self, branch_id: int) -> list[Message]:
+    def list_messages(self, branch_source_id: str) -> list[Message]:
         """获取某个分支下按 position 排序的消息"""
 
-        return self.message_repository.list_by_branch(branch_id)
+        return self.message_repository.list_by_branch(branch_source_id)
 
 
-    def list_attachments(self, message_id: int) -> list[Attachment]:
+    def list_attachments(self, message_source_id: str) -> list[Attachment]:
         """获取某条消息下的附件列表"""
 
-        return self.attachment_repository.list_by_message(message_id)
+        return self.attachment_repository.list_by_message(message_source_id)

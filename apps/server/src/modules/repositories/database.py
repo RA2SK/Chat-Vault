@@ -1,4 +1,4 @@
-"""SQLite 数据库连接、初始化和事务管理的基础接口"""
+"""管理数据库连接, 事务, 初始化流程和数据库运行配置"""
 
 import sqlite3
 from contextlib import contextmanager
