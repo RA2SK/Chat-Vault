@@ -1,4 +1,4 @@
-"""查询服务, 向 CLI、Markdown 导出器和未来的 Web 输出端提供统一的读取入口"""
+"""根据查询条件读取对话内容, 组织分支, 消息和附件关系, 并生成查询调用方可使用的结果"""
 
 from dataclasses import dataclass
 
@@ -76,13 +76,10 @@ class QueryService:
             messages[branch.source_id] = branch_messages
             branch.messages = branch_messages
 
-            branch_attachments: list[Attachment] = []
             for message in branch_messages:
                 message_attachments = self.list_attachments(message.source_id)
                 attachments[message.source_id] = message_attachments
-                branch_attachments.extend(message_attachments)
-
-            branch.attachments = branch_attachments
+                message.attachments = message_attachments
 
         conversation.branches = branches
         return ConversationDetail(

@@ -1,4 +1,4 @@
-"""针对Chatbox 1.22及以上版本的输入适配器"""
+"""解析 Chatbox 1.22及以上版本的备份数据, 并生成核心内容模型能够继续处理的输入"""
 
 import json
 import zipfile
@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Iterator, cast
 
+from core.enums import AttachmentType, MessageRole, SourceType
 from core.models import Attachment, Branch, Checksum, Conversation, Message
 
 from .base import BaseImporter, ParseResult
@@ -14,8 +15,8 @@ from .preprocess import with_source_namespace
 
 class ChatboxV2Importer(BaseImporter):
     format_key = "chatbox.v2"
-    source_type = "chatbox"                         # 用于拼接 source_id 的前缀
-    empty_thinking_markers = {"", "[redacted]"}     # 思考链的无效内容标记
+    source_type = SourceType.CHATBOX                    # 用于拼接 source_id 的前缀
+    empty_thinking_markers = {"", "[redacted]"}         # 思考链的无效内容标记
 
     def detect(self, path: Path) -> bool:
         """判断文件是否为 Chatbox v2 备份"""
@@ -259,6 +260,7 @@ class ChatboxV2Importer(BaseImporter):
                         source_id=namespaced_item_source_id,
                         title=item_title,
                         source_entry=item_source_entry,
+                        source_type=self.source_type,
                     )
                     warnings: list[str] = cast(
                         list[str], session_item.get("collection_warnings", [])
@@ -274,8 +276,7 @@ class ChatboxV2Importer(BaseImporter):
                         warnings=warnings,
                         is_current=True,
                     )
-                    if main_branch is not None:
-                        conversation.branches.append(main_branch)
+                    conversation.branches.append(main_branch)
 
                     if isinstance(item_forks, dict):
                         self._parse_fork_branches(
@@ -339,7 +340,7 @@ class ChatboxV2Importer(BaseImporter):
         warnings: list[str],
         is_current: bool = False,
     ) -> Branch:
-        """循环解析单条消息链, 调用 _parse_message 和 _parse_attachment, 返回分支链对象 Branch """
+        """循环解析单条消息链, 调用 _parse_message, 返回分支链对象 Branch """
 
         branch_source_id = with_source_namespace(
             self.source_type,
@@ -390,7 +391,7 @@ class ChatboxV2Importer(BaseImporter):
                 )
                 continue
 
-            parsed_message = self._parse_message(       # 调用函数处理单条消息
+            message = self._parse_message(             # 调用函数处理单条消息
                 content_parts=content_parts,
                 message_id=message_id,
                 message_data=message_data,
@@ -400,16 +401,10 @@ class ChatboxV2Importer(BaseImporter):
                 archive_names=archive_names,
                 warnings=warnings,
             )
-            message, attachments = parsed_message
+            if message is None:
+                continue
             branch.messages.append(message)
             valid_position += 1
-
-            for attachment in attachments:              # 整理本条链下各个消息所携带的附件
-                self._parse_attachment(
-                    branch=branch,
-                    attachment=attachment,
-                    warnings=warnings,
-                )
 
         timestamps = [
             message.timestamp
@@ -545,8 +540,19 @@ class ChatboxV2Importer(BaseImporter):
         resource_by_storage_key: dict[str, dict],
         archive_names: set[str],
         warnings: list[str],
-    ) -> tuple[Message, list[Attachment]]:
-        """解析单条消息, 调用 _parse_message_part_ 系列辅助函数, 返回消息对象 Message 及附件对象 Attachment"""
+    ) -> Message | None:
+        """解析单条消息, 调用 _parse_message_part_ 系列辅助函数, 返回消息对象 Message
+
+        消息角色无法识别时返回 None, 由调用方跳过该消息
+        """
+
+        try:
+            message_role = MessageRole(role)
+        except ValueError:
+            warnings.append(
+                f"消息 {message_id} 的角色 {role!r} 不受支持, 已跳过"
+            )
+            return None
 
         text_parts: list[str] = []                                  # 待拼接的正文列表
         thinking_parts: list[str] = []                              # 待拼接的思考内容列表
@@ -645,38 +651,15 @@ class ChatboxV2Importer(BaseImporter):
 
         message = Message(
             source_id=namespaced_message_id,
-            role=role,
+            role=message_role,
             content=text_content,
             position=position,
             thinking=thinking_content,
             model=model_name,
             timestamp=timestamp,
+            attachments=attachments,
         )
-        return message, attachments
-
-
-
-    def _parse_attachment(
-        self,
-        branch: Branch,
-        attachment: Attachment,
-        warnings: list[str],
-    ) -> None:
-        """将附件归属到 Branch"""
-
-        message_source_id = attachment.message_source_id
-        if not isinstance(message_source_id, str) or not message_source_id:
-            warnings.append("附件缺少有效的 message_source_id, 已跳过")
-            return
-
-        message_ids = {message.source_id for message in branch.messages}
-        if message_source_id not in message_ids:
-            warnings.append(
-                f"附件对应的消息 {message_source_id} 不在分支 {branch.source_id} 中, 已跳过"
-            )
-            return
-
-        branch.attachments.append(attachment)
+        return message
 
 
 
@@ -800,7 +783,7 @@ class ChatboxV2Importer(BaseImporter):
                 checksum = {"algorithm": algorithm, "value": value}
 
         return Attachment(
-            attach_type="image",
+            attach_type=AttachmentType.IMAGE,
             source_ref=resource_path,
             mime_type=mime_type,
             checksum=checksum,

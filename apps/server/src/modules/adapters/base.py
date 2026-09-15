@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
 
+from core.enums import SourceType
 from core.models import Conversation
 
 
@@ -21,6 +22,7 @@ class BaseImporter:
     """输入适配器的接口"""
 
     format_key: str                   # 适配器类型注解
+    source_type: SourceType           # 输入来源, 同时作为 source_id 的命名空间前缀
 
     def detect(self, path: Path) -> bool:
         """判断给定文件是否是当前适配器支持的格式"""

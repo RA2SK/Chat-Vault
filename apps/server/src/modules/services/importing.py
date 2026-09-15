@@ -1,4 +1,4 @@
-"""导入服务, 负责协调输入适配器、业务模型和仓储层"""
+"""收适配器生成的导入内容, 执行完整性检查, 重复导入判断, 批次管理和仓储写入流程"""
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -119,7 +119,7 @@ class ImportService:
         self,
         path: Path,
         format_key: str,
-                source_type: SourceType,
+        source_type: SourceType,
     ) -> ImportBatch:
         """创建处于初始状态的导入批次"""
 
@@ -130,7 +130,7 @@ class ImportService:
             file_name=path.name,
             file_hash=file_hash,
             started_at=import_time,
-                    status=ImportStatus.SUCCESS,
+            status=ImportStatus.SUCCESS,
             total_count=0,
             success_count=0,
             failed_count=0,
@@ -197,6 +197,7 @@ class ImportService:
         self._validate_conversation(conversation)
 
         conversation.import_batch_id = import_batch.id
+        conversation.source_archive = import_batch.file_name
         existing = self._find_existing_conversation(conversation)
 
         if existing is None:
@@ -226,16 +227,13 @@ class ImportService:
         for message in branch.messages:                             # 逐个处理消息
             self._save_message(message, branch)
 
-        for attachment in branch.attachments:                       # 逐个处理附件
-            self._save_attachment(attachment, branch)
-
 
     def _save_message(
         self,
         message: Message,
         branch: Branch,
     ) -> None:
-        """保存或更新一条消息"""
+        """保存或更新一条消息, 并保存其附件"""
 
         existing = self.message_repository.get_by_source_id(message.source_id)
 
@@ -244,27 +242,15 @@ class ImportService:
         else:
             self.message_repository.update(message)
 
+        for attachment in message.attachments:                      # 逐个处理附件
+            self._save_attachment(attachment)
+
 
     def _save_attachment(
         self,
         attachment: Attachment,
-        branch: Branch,
     ) -> None:
-        """保存或更新一个附件, 并将其绑定到对应消息"""
-
-        message = next(
-            (
-                item
-                for item in branch.messages
-                if item.source_id == attachment.message_source_id
-            ),
-            None,
-        )
-        if message is None:
-            raise ValueError(
-                "附件引用的消息不存在: "
-                f"{attachment.message_source_id}"
-            )
+        """保存或更新一个附件"""
 
         existing = next(
             (
@@ -328,22 +314,22 @@ class ImportService:
                 if message.role not in {"user", "assistant", "system"}:
                     raise ValueError(f"不支持的消息角色: {message.role}")
 
-            for attachment in branch.attachments:
-                if not attachment.message_source_id.strip():
-                    raise ValueError("Attachment.message_source_id 不能为空")
-                if attachment.message_source_id not in message_source_ids:
-                    raise ValueError(
-                        "附件引用了当前分支中不存在的消息: "
-                        f"{attachment.message_source_id}"
-                    )
-                if not attachment.source_ref.strip():
-                    raise ValueError("Attachment.source_ref 不能为空")
-                if attachment.attach_type not in {"image", "file", "other"}:
-                    raise ValueError(
-                        f"不支持的附件类型: {attachment.attach_type}"
-                    )
-                if attachment.size is not None and attachment.size < 0:
-                    raise ValueError("Attachment.size 不能小于 0")
+                for attachment in message.attachments:
+                    if not attachment.message_source_id.strip():
+                        raise ValueError("Attachment.message_source_id 不能为空")
+                    if attachment.message_source_id != message.source_id:
+                        raise ValueError(
+                            "附件引用的消息与所属消息不一致: "
+                            f"{attachment.message_source_id}"
+                        )
+                    if not attachment.source_ref.strip():
+                        raise ValueError("Attachment.source_ref 不能为空")
+                    if attachment.attach_type not in {"image", "file", "other"}:
+                        raise ValueError(
+                            f"不支持的附件类型: {attachment.attach_type}"
+                        )
+                    if attachment.size is not None and attachment.size < 0:
+                        raise ValueError("Attachment.size 不能小于 0")
 
 
     def _find_existing_conversation(

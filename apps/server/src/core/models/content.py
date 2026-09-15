@@ -51,6 +51,8 @@ class Message:
     edited_at: datetime | None = None               # 最后编辑时间
     edited_by: UserId | None = None
 
+    attachments: list["Attachment"] = field(default_factory=list)
+
 
 @dataclass
 class Branch:
@@ -65,7 +67,6 @@ class Branch:
     is_current: bool = False                        # 当前链; 导入的主链设为 True
 
     messages: list[Message] = field(default_factory=list)
-    attachments: list["Attachment"] = field(default_factory=list)
 
 
 @dataclass
