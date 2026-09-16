@@ -20,6 +20,7 @@ source_id, 而不是先取出父节点对象.
 
 from typing import Protocol
 
+from core.enums import UserRole
 from core.models import (
     AdminMark,
     Attachment,
@@ -141,15 +142,25 @@ class CommentStore(Protocol):
         ...
 
     def list_by_conversation(self, conversation_source_id: str) -> list[Comment]:
-        """查询直接挂在某个对话下的评论
+        """查询直接挂在某个对话下的有效评论
 
         只匹配 conversation_source_id, 不包含该对话所属消息的评论,
         因为消息级评论的 conversation_source_id 为空
         """
         ...
 
+    def list_by_conversation_including_messages(
+        self,
+        conversation_source_id: str,
+    ) -> list[Comment]:
+        """查询某个对话下的全部有效评论, 含该对话所属消息的评论
+
+        消息级评论在库内不记录所属对话, 需要沿内容图回溯归属
+        """
+        ...
+
     def list_by_message(self, message_source_id: str) -> list[Comment]:
-        """查询某条消息下的评论"""
+        """查询某条消息下的有效评论"""
         ...
 
     def soft_delete(self, comment_id: CommentId) -> None:
@@ -174,7 +185,11 @@ class AdminMarkStore(Protocol):
 
 
 class UserStore(Protocol):
-    """User 的持久化契约"""
+    """User 的持久化契约
+
+    刻意不提供"列出全部用户"的方法: 该能力在业务上不需要, 提供它会扩大
+    用户信息的暴露面. 需要判断某类角色是否存在时使用 `has_role`.
+    """
 
     def create(self, user: User) -> None:
         """保存一个用户"""
@@ -186,6 +201,10 @@ class UserStore(Protocol):
 
     def get_by_username(self, username: str) -> User | None:
         """根据用户名查询用户"""
+        ...
+
+    def has_role(self, role: UserRole) -> bool:
+        """判断是否存在至少一个指定角色的用户"""
         ...
 
     def update(self, user: User) -> None:

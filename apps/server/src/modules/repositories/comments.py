@@ -63,13 +63,19 @@ class CommentRepository:
 
 
     def list_by_conversation(self, conversation_source_id: str) -> list[Comment]:
-        """查询某个对话下的评论"""
+        """查询直接挂在某个对话下的有效评论
+
+        只匹配 conversation_source_id, 不包含该对话所属消息的评论,
+        因为消息级评论的 conversation_source_id 为空. 需要覆盖消息评论时
+        使用 `list_by_conversation_including_messages`.
+        """
 
         rows = self.connection.execute(
             """
             SELECT *
             FROM comments
             WHERE conversation_source_id = ?
+              AND is_deleted = 0
             ORDER BY created_at ASC, id ASC
             """,
             (conversation_source_id,),
@@ -82,14 +88,54 @@ class CommentRepository:
         return comments
 
 
+    def list_by_conversation_including_messages(
+        self,
+        conversation_source_id: str,
+    ) -> list[Comment]:
+        """查询某个对话下的全部有效评论, 含该对话所属消息的评论
+
+        消息级评论在库内不记录所属对话, 因此这里沿
+        comments -> messages -> branches -> conversations 逐级回溯归属.
+        对话评论与消息评论合并后按时间线排序, 时间相同时按 id 兜底,
+        保证同一批数据每次返回的顺序一致.
+        """
+
+        rows = self.connection.execute(
+            """
+            SELECT comments.*
+            FROM comments
+            LEFT JOIN messages
+                ON messages.source_id = comments.message_source_id
+            LEFT JOIN branches
+                ON branches.id = messages.branch_id
+            LEFT JOIN conversations
+                ON conversations.id = branches.conversation_id
+            WHERE comments.is_deleted = 0
+              AND (
+                  comments.conversation_source_id = ?
+                  OR conversations.source_id = ?
+              )
+            ORDER BY comments.created_at ASC, comments.id ASC
+            """,
+            (conversation_source_id, conversation_source_id),
+        ).fetchall()
+
+        comments: list[Comment] = []
+        for row in rows:
+            comments.append(to_comment(row))
+
+        return comments
+
+
     def list_by_message(self, message_source_id: str) -> list[Comment]:
-        """查询某条消息下的评论"""
+        """查询某条消息下的有效评论"""
 
         rows = self.connection.execute(
             """
             SELECT *
             FROM comments
             WHERE message_source_id = ?
+              AND is_deleted = 0
             ORDER BY created_at ASC, id ASC
             """,
             (message_source_id,),

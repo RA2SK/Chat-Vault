@@ -63,8 +63,19 @@ class CommentServiceContract(Protocol):
         """查询直接挂在某个对话下的有效评论
 
         只返回直接挂在对话下的评论, 不包含该对话所属消息的评论,
-        因为消息级评论在库内不记录所属对话. 需要覆盖消息评论时,
-        调用方应逐个消息调用 `list_by_message`.
+        因为消息级评论在库内不记录所属对话. 需要覆盖消息评论时使用
+        `list_by_conversation_including_messages`.
+        """
+        ...
+
+    def list_by_conversation_including_messages(
+        self,
+        conversation_source_id: str,
+    ) -> list[Comment]:
+        """查询某个对话下的全部有效评论, 含该对话所属消息的评论
+
+        对话评论与消息评论合并后按时间线排序, 已删除的评论不返回.
+        这是"查看该对话下所有讨论"的整体视图, 不需要调用方逐个消息拼接.
         """
         ...
 

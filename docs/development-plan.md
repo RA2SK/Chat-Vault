@@ -2,6 +2,16 @@
 
 ## 一、更新日志
 
+### 2026-09-16（管理员初始化与对话级评论聚合）
+
+- `UserService` 新增 `register_admin()` 与 `has_admin()`，`register()` 与 `register_admin()` 共用私有的 `_create_user()` 做用户名与密码校验，两者唯一区别是角色。刻意不做"第一个用户自动升格"，创建管理员必须由调用方明确表达意图。
+- `UserRepository` 与 `UserStore` 新增 `has_role(role)`，只回答"是否存在某类角色"，不提供"列出全部用户"，与既有的"不扩大用户信息暴露面"决定保持一致。
+- `bootstrap.py` 新增模块级函数 `ensure_initial_admin(container, username, password)`：库中已有管理员时直接返回 `False`，因此重复调用安全；用户名或密码任一为空时跳过并返回 `False`，这是"不启用自动初始化"的开关。函数不提供任何默认口令，默认口令写进代码等于公开管理员入口。该函数刻意不放进 `ServiceContainer.create()`：`create()` 负责结构装配，测试还会用 `initialize=False` 跳过建表，把数据初始化混进去会让职责和测试语义都变模糊。
+- 修正角色默认值不一致：`core/models/identity.py` 的 `User.role` 默认值由 `UserRole.ADMIN` 改为 `UserRole.USER`，`schema.sql` 的 `users.role` 默认值由 `'admin'` 改为 `'user'`。此前模型与数据库默认管理员、而服务层显式传普通用户，三处互相矛盾。
+- `CommentRepository` 与 `CommentStore` 新增 `list_by_conversation_including_messages()`：消息级评论在库内不记录所属对话，该方法沿 `comments -> messages -> branches -> conversations` 逐级回溯归属，把对话评论与消息评论合并后按时间线排序。`list_by_conversation()` 语义不变，仍只返回直接挂在对话下的评论。
+- 三个评论查询方法的 `is_deleted = 0` 过滤从服务层的 Python 列表推导下推到 SQL，服务层不再重复过滤，仓储契约的文档也补上了"只返回有效评论"的说明。
+- 新增 `tests/test_admin_and_comments.py`，覆盖管理员注册、`has_admin`、`ensure_initial_admin` 的跳过与幂等行为，以及对话级评论聚合的合并、软删除过滤和跨对话隔离。
+
 ### 2026-09-15（接口契约层）
 
 - 完成 `modules/interfaces/` 下全部接口契约文件的编写：`repositories_intf.py`、`importing_intf.py`、`querying_intf.py`、`publishing_intf.py`、`moderation_intf.py`、`comments_intf.py`、`users_intf.py`，并新增 `exporting_intf.py` 承载内容重新打包契约，`__init__.py` 统一导出全部契约。
@@ -88,10 +98,10 @@
 
 - `apps/server/src/modules/services/importing.py`：已完成适配器调用、解析结果处理、基础校验、幂等保存、`source_archive` 归档信息和导入批次统计；完整事务编排、复杂错误恢复和更多边界规则尚未实现。
 - `apps/server/src/modules/services/querying.py`：已完成对话列表、已发布对话列表、对话详情以及分支、消息和附件的基础查询；复杂搜索、筛选、排序和分页尚未实现。
-- `apps/server/src/modules/services/users.py`：只有预先准备好的最小权限判断；用户注册、信息维护和密码保存尚未实现。
+- `apps/server/src/modules/services/users.py`：已完成权限判断、普通用户注册、管理员注册、`has_admin` 检查、认证与改密；返回值的 `UserView` 收窄、用户信息维护和会话管理尚未实现。`register()`/`get()` 目前仍返回带 `password_hash` 的 `User`，调用方不得直接把该对象交给前端。
 - `apps/server/src/modules/services/publishing.py`：只有预先准备好的最小发布权限判断；发布内容整理和展示字段处理尚未实现。
 - `apps/server/src/modules/services/moderation.py`：只有预先准备好的最小管理权限判断；管理员编辑、标记和维护流程尚未实现。
-- `apps/server/src/modules/services/comments.py`：只有预先准备好的最小评论权限判断；评论的创建、读取、修改和删除尚未实现。
+- `apps/server/src/modules/services/comments.py`：已完成评论的创建、按对话查询、按消息查询、对话级聚合查询和软删除；评论编辑按设计不提供，修改意见只能删除后重发。
 - `apps/server/src/core/__init__.py`：仅完成基础公共导出；更复杂的业务初始化和导出控制尚未实现。
 - `apps/server/src/modules/interfaces/`：契约层已完整建立。`repositories_intf.py`、`importing_intf.py`、`querying_intf.py`、`publishing_intf.py`、`moderation_intf.py`、`comments_intf.py`、`users_intf.py`、`exporting_intf.py` 与 `__init__.py` 均已写入契约；仍属"已部分完成"，因为部分契约按当前实现现状声明（`PublicationServiceContract.get_conversation_for_view` 仍返回 `ConversationDetail`，`UserServiceContract.register`/`get` 仍返回带 `password_hash` 的 `User`），尚未收窄为契约中声明的 `PublishedConversationView` 与 `UserView`；`exporting_intf.py` 只声明了形状，没有任何实现。
 
@@ -100,7 +110,7 @@
 - `apps/server/src/api/routes.py`、`schemas.py`、`dependencies.py`、`exception_handlers.py`：文件已建立，Web API 路由、请求响应校验、依赖提供和异常转换尚未开始。
 - `apps/server/src/modules/interfaces/exporting_intf.py`：内容重新打包契约已声明形状，输出端实现、Web 数据提交和落盘编排尚未开始。
 - `apps/server/src/utils/hashing.py`、`apps/server/src/utils/logging.py`：文件已建立，校验和计算与统一日志逻辑尚未开始。
-- `apps/server/src/cli.py`、`apps/server/src/main.py`：文件已建立，CLI 入口和 Web 服务启动逻辑尚未开始。
+- `apps/server/src/cli.py`、`apps/server/src/main.py`：文件已建立，CLI 入口和 Web 服务启动逻辑尚未开始。`bootstrap.ensure_initial_admin()` 目前只被测试调用，等入口文件落地后应由启动流程读取环境变量并调用它。
 - `apps/client/src/`：前端仅建立基础目录和项目入口，对话浏览、Markdown 模拟渲染、搜索、评论和管理界面尚未开始。
 
 ## 三、已发现但尚未完成的内容

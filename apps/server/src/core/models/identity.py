@@ -15,5 +15,5 @@ class User:
     password_hash: str                              # 禁止明文
     created_at: datetime
 
-    role: UserRole = UserRole.ADMIN
+    role: UserRole = UserRole.USER
     id: UserId = field(default_factory=lambda: UserId(new_id()))

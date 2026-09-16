@@ -107,8 +107,32 @@ class ServiceContainer:
             comment_service=comment_service,
         )
 
-
     def close(self) -> None:
         """关闭服务使用的数据库连接"""
 
         self.connection.close()
+
+
+def ensure_initial_admin(
+    container: ServiceContainer,
+    username: str | None = None,
+    password: str | None = None,
+) -> bool:
+    """确保库中至少存在一名管理员, 返回本次是否新建了管理员
+
+    只在库中一名管理员都没有时才动作, 因此重复调用是安全的.
+    用户名和密码必须由调用方显式提供, 本函数不提供任何默认口令:
+    默认口令一旦写进代码就等于把管理员入口公开.
+
+    两者任一为空时直接跳过并返回 False, 这是"不启用自动初始化"的开关.
+    用户名已被占用时抛出 ValueError, 由调用方决定如何处理.
+    """
+
+    if not username or not password:
+        return False
+
+    if container.user_service.has_admin():
+        return False
+
+    container.user_service.register_admin(username, password)
+    return True

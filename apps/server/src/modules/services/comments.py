@@ -94,25 +94,34 @@ class CommentService:
 
 
     def list_by_conversation(self, conversation_source_id: str) -> list[Comment]:
-        """查询某个对话下的有效评论"""
+        """查询直接挂在某个对话下的有效评论
 
-        return [
-            comment
-            for comment in self.comment_repository.list_by_conversation(
-                conversation_source_id,
-            )
-            if not comment.is_deleted
-        ]
+        只返回直接挂在对话下的评论, 不包含该对话所属消息的评论.
+        需要覆盖消息评论时使用 `list_by_conversation_including_messages`.
+        """
+
+        return self.comment_repository.list_by_conversation(conversation_source_id)
+
+
+    def list_by_conversation_including_messages(
+        self,
+        conversation_source_id: str,
+    ) -> list[Comment]:
+        """查询某个对话下的全部有效评论, 含该对话所属消息的评论
+
+        对话评论与消息评论合并后按时间线排序, 供"查看该对话下所有讨论"
+        这类整体视图使用.
+        """
+
+        return self.comment_repository.list_by_conversation_including_messages(
+            conversation_source_id,
+        )
 
 
     def list_by_message(self, message_source_id: str) -> list[Comment]:
         """查询某条消息下的有效评论"""
 
-        return [
-            comment
-            for comment in self.comment_repository.list_by_message(message_source_id)
-            if not comment.is_deleted
-        ]
+        return self.comment_repository.list_by_message(message_source_id)
 
 
     def delete(self, user: User | None, comment_id: CommentId) -> None:

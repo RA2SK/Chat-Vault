@@ -88,7 +88,7 @@ class UserServiceContract(Protocol):
     具体实现的构造依赖为: 用户仓储契约.
 
     刻意不提供"列出全部用户"的调用: 该能力在业务上不需要, 提供它会扩大
-    用户信息的暴露面.
+    用户信息的暴露面. 需要判断管理员是否存在时使用 `has_admin`.
     """
 
     def register(self, username: str, password: str) -> User:
@@ -96,6 +96,23 @@ class UserServiceContract(Protocol):
 
         用户名或密码为空时抛出 ValueError, 用户名已存在时抛出 ValueError.
         实现固定把新用户设为普通用户, 不接受调用方指定角色.
+        需要创建管理员时使用 `register_admin`.
+        """
+        ...
+
+    def register_admin(self, username: str, password: str) -> User:
+        """注册一个新管理员
+
+        校验规则与 `register` 相同, 唯一区别是角色为管理员.
+        实现不做任何隐式的"第一个用户升格", 调用方需要明确表达意图.
+        """
+        ...
+
+    def has_admin(self) -> bool:
+        """判断库中是否已有至少一名管理员
+
+        供启动自检使用. 刻意不提供"列出全部用户"的调用: 该能力在业务上
+        不需要, 提供它会扩大用户信息的暴露面.
         """
         ...
 

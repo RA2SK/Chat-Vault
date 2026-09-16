@@ -3,6 +3,7 @@
 import sqlite3
 from dataclasses import dataclass
 
+from core.enums import UserRole
 from core.models import User
 from core.types import UserId
 from modules.repositories.mappings import to_db_datetime, to_user
@@ -63,6 +64,21 @@ class UserRepository:
             return None
 
         return to_user(row)
+
+
+    def has_role(self, role: UserRole) -> bool:
+        """判断是否存在至少一个指定角色的用户
+
+        刻意只回答"有没有", 不提供"列出全部用户": 前者是启动自检需要的能力,
+        后者会扩大用户信息的暴露面.
+        """
+
+        row = self.connection.execute(
+            "SELECT 1 FROM users WHERE role = ? LIMIT 1",
+            (role,),
+        ).fetchone()
+
+        return row is not None
 
 
     def update(self, user: User) -> None:

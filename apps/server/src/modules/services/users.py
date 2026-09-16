@@ -50,7 +50,33 @@ class UserService:
 
 
     def register(self, username: str, password: str) -> User:
-        """注册一个新用户"""
+        """注册一个新用户
+
+        新用户固定为普通用户. 需要创建管理员时使用 `register_admin`,
+        避免一个方法承担两种权限等级的创建.
+        """
+
+        return self._create_user(username, password, UserRole.USER)
+
+
+    def register_admin(self, username: str, password: str) -> User:
+        """注册一个新管理员
+
+        与 `register` 的唯一区别是角色. 不做任何隐式的"第一个用户升格",
+        调用方需要明确表达意图.
+        """
+
+        return self._create_user(username, password, UserRole.ADMIN)
+
+
+    def has_admin(self) -> bool:
+        """判断库中是否已有至少一名管理员"""
+
+        return self.user_repository.has_role(UserRole.ADMIN)
+
+
+    def _create_user(self, username: str, password: str, role: UserRole) -> User:
+        """创建用户并落库, 用户名与密码的校验由本方法统一负责"""
 
         if not username or not password:
             raise ValueError("用户名和密码不能为空")
@@ -62,7 +88,7 @@ class UserService:
             username=username,
             password_hash=hash_password(password),
             created_at=datetime.now(timezone.utc),
-            role=UserRole.USER,
+            role=role,
         )
         self.user_repository.create(user)
         return user
