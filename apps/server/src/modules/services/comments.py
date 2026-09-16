@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from core.enums import CommentTarget
 from core.exceptions import (
+    NotAuthenticatedError,
     NotFoundError,
     PermissionDeniedError,
     ValidationError,
@@ -97,7 +98,12 @@ class CommentService:
         if not can_create_comment(user, target):
             raise PermissionDeniedError(MessageKey.COMMENT_CREATE_FORBIDDEN)
 
-        assert user is not None
+        # can_create_comment 已经要求 user 非空, 这里再断言一次是为了让类型
+        # 收窄对类型检查器可见. 用显式检查而不是 assert: assert 在 -O 下会被
+        # 剥掉, 生产环境里就只剩一个静默的 None 解引用.
+        if user is None:
+            raise NotAuthenticatedError(MessageKey.AUTHENTICATION_REQUIRED)
+
         comment = Comment(
             target_type=target_type,
             content=submission.content,
@@ -151,4 +157,10 @@ class CommentService:
         require_admin(user)
 
         with transaction(self.comment_repository.connection):
-            self.comment_repository.soft_delete(comment_id)
+            deleted = self.comment_repository.soft_delete(comment_id)
+
+        if not deleted:
+            raise NotFoundError(
+                MessageKey.COMMENT_NOT_FOUND,
+                comment_id=comment_id,
+            )

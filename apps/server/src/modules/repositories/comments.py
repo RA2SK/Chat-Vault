@@ -102,33 +102,46 @@ class CommentRepository:
 
         消息级评论在库内不记录所属对话, 因此这里沿
         comments -> messages -> branches -> conversations 逐级回溯归属.
-        对话评论与消息评论合并后按时间线排序, 时间相同时按 id 兜底,
-        保证同一批数据每次返回的顺序一致.
+
+        刻意拆成两条查询而不是一条带 OR 的联表查询: 原来的写法把
+        `comments.conversation_source_id = ?` 和 `conversations.source_id = ?`
+        放在同一个 OR 里, 优化器无法用上 idx_comments_conversation 和
+        idx_comments_message, 只能全表扫 comments 再逐行联表. 拆开之后两条
+        查询各自都能走索引, 合并与排序在内存里做, 数据量是"这个对话下的评论
+        数", 而不是"全库评论数".
         """
 
-        rows = self.connection.execute(
+        conversation_comments = self.connection.execute(
+            """
+            SELECT *
+            FROM comments
+            WHERE conversation_source_id = ?
+              AND is_deleted = 0
+            """,
+            (conversation_source_id,),
+        ).fetchall()
+
+        message_comments = self.connection.execute(
             """
             SELECT comments.*
             FROM comments
-            LEFT JOIN messages
+            JOIN messages
                 ON messages.source_id = comments.message_source_id
-            LEFT JOIN branches
+            JOIN branches
                 ON branches.id = messages.branch_id
-            LEFT JOIN conversations
+            JOIN conversations
                 ON conversations.id = branches.conversation_id
-            WHERE comments.is_deleted = 0
-              AND (
-                  comments.conversation_source_id = ?
-                  OR conversations.source_id = ?
-              )
-            ORDER BY comments.created_at ASC, comments.id ASC
+            WHERE conversations.source_id = ?
+              AND comments.is_deleted = 0
             """,
-            (conversation_source_id, conversation_source_id),
+            (conversation_source_id,),
         ).fetchall()
 
-        comments: list[Comment] = []
-        for row in rows:
-            comments.append(to_comment(row))
+        comments = [to_comment(row) for row in conversation_comments]
+        comments.extend(to_comment(row) for row in message_comments)
+
+        # 时间相同时按 id 兜底, 保证同一批数据每次返回的顺序一致
+        comments.sort(key=lambda comment: (comment.created_at, comment.id))
 
         return comments
 
@@ -154,10 +167,16 @@ class CommentRepository:
         return comments
 
 
-    def soft_delete(self, comment_id: CommentId) -> None:
-        """软删除一条评论"""
+    def soft_delete(self, comment_id: CommentId) -> bool:
+        """软删除一条评论, 返回是否真的删掉了一行
 
-        self.connection.execute(
-            "UPDATE comments SET is_deleted = 1 WHERE id = ?",
+        返回布尔值而不是静默成功: 调用方需要区分"删掉了"和"这条评论根本
+        不存在", 后者应当报 404 而不是假装成功.
+        """
+
+        cursor = self.connection.execute(
+            "UPDATE comments SET is_deleted = 1 WHERE id = ? AND is_deleted = 0",
             (comment_id,),
         )
+
+        return cursor.rowcount > 0

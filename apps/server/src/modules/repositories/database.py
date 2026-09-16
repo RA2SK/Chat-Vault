@@ -10,8 +10,14 @@ from core.exceptions import PersistenceError
 from core.messages import MessageKey
 
 # 默认数据库和数据库结构文件的位置
-# 程序尚未成型, 数据库暂时生成在 data/raw 下, 完成后再迁回 data 下
-DEFAULT_DATABASE_PATH = Path("data/raw/chat_vault.db")
+#
+# 数据库路径以 pyproject.toml 所在目录为基准解析, 而不是以进程当前工作目录为
+# 基准: 后者取决于从哪里启动程序, 从仓库根目录启动和从 apps/server 启动会
+# 落到两个不同的库上, 数据看起来"丢了"其实只是找错了地方.
+#
+# 程序尚未成型, 数据库暂时生成在 data/raw 下, 完成后再迁回 data 下.
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_DATABASE_PATH = _PROJECT_ROOT / "data" / "raw" / "chat_vault.db"
 DEFAULT_SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 # 连接锁: 多个线程共用同一个连接时, 一个线程的 commit 会把另一个线程尚未

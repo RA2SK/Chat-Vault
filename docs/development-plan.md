@@ -2,6 +2,25 @@
 
 ## 一、更新日志
 
+### 2026-09-20（枚举往返、导入原子性与仓储层缺陷修复）
+
+本轮修复的是"能跑通但结果不对"的一类缺陷：它们不会让测试变红，因为测试没有覆盖到，但会在真实使用中给出错误结果或直接崩溃。
+
+- **修复枚举往返丢失（`modules/repositories/mappings.py`）**。所有枚举列在写入时被 SQLite 存成文本，读回来是裸字符串，而 `to_*` 转换函数原样透传，于是模型字段的类型标注是假的。最直接的后果是 `cli.py` 在重复导入路径上崩溃：`batch.status.value` 抛 `AttributeError: 'str' object has no attribute 'value'`，因为首次导入返回的是内存里的 `ImportStatus`，重复导入返回的是从库里读出来的 `str`。新增 `_to_enum()` 统一还原，`source_type` 单独走 `_to_source_type()`：该列没有 CHECK 约束（来源格式会随适配器增加），无法识别的取值归入 `SourceType.OTHER`，而不是让整行读不出来。其余枚举列都有 CHECK 约束，取值必然合法，因此不做兜底——真出现非法值说明库被外部改动过，应当立刻暴露。
+- **移除"部分成功"语义（`core/enums.py`、`modules/services/importing.py`、`schema.sql`）**。`ImportStatus.PARTIAL` 把"这次导入到底算不算数"变成了调用方需要二次判断的问题：批次落库了、一部分内容也落库了，调用方却无法据此决定要不要重试。现在批次状态只有 `success` 和 `failed` 两档，回答的是"这次导入有没有整体成立"；单条解析失败只体现在 `failed_count` 和 `error_summary` 上，不改变批次状态，也不中止整次导入。`schema.sql` 的 CHECK 约束同步收窄。
+- **导入失败不再把异常原文写进 `error_summary`**。该字段是面向调用方的，而异常文本是给开发者看的，可能带路径和内部细节。现在只写入异常类型名，完整堆栈由日志承担。
+- **把导入流程里的两处硬编码文案移入文本目录**：新增 `MessageKey.IMPORT_RESULT_EMPTY` 与 `MessageKey.IMPORT_CONVERSATION_SAVE_FAILED`，改用 `render()`。
+- **校验逻辑改用枚举而不是字面量集合**：`_validate_conversation()` 里的 `{"user", "assistant", "system"}` 和 `{"image", "file", "other"}` 换成 `set(MessageRole)` 与 `set(AttachmentType)`，枚举增删成员时校验自动跟随。
+- **软删除不再静默成功**：`CommentRepository.soft_delete()` 与 `AdminMarkRepository.soft_delete()` 改为返回布尔值，`UPDATE` 语句加上 `AND is_deleted = 0` 条件，因此"删掉了"和"本来就不存在"可以区分。服务层的 `delete()` 与 `remove_mark()` 在未删到任何行时抛 `NotFoundError`（新增 `MessageKey.COMMENT_NOT_FOUND` 与 `MessageKey.MARK_NOT_FOUND`），而不是假装成功。
+- **移除生产路径上的 `assert`**：`CommentService.create()` 与 `ModerationService.add_mark()` 里的 `assert user is not None` 换成显式的 `NotAuthenticatedError`。`assert` 在 `-O` 下会被剥掉，生产环境里就只剩一个静默的 `None` 解引用。
+- **`update` 不再写时间戳（`modules/repositories/conversations.py`）**：`ConversationRepository.update()` 与 `BranchRepository.update()` 停止写入 `created_at` / `updated_at`。时间戳由导入层按备份内容决定，是数据的一部分，不是"这次写入发生在什么时候"；让 `update` 顺手刷新时间戳会把重复导入变成一次内容变更，也让时间戳失去可追溯性。消息编辑功能实装时再单独讨论。
+- **附件查找由线性扫描改为字典（`modules/services/importing.py`）**：`_save_attachment()` 原本对每条附件都重新查一遍该消息的全部附件并逐项比对，附件数为 n 时是 O(n²) 次比较加 n 次查询。改为一次性取成 `{source_ref: attachment}` 字典。
+- **导入文件摘要只计算一次**：`import_results()` 原本在重复检测和创建批次时各算一次 `sha256`，现在算一次后传入 `_create_import_batch()`。
+- **评论聚合查询拆成两条（`modules/repositories/comments.py`）**：`list_by_conversation_including_messages()` 原本用一条带 `OR` 的联表查询，`comments.conversation_source_id = ?` 与 `conversations.source_id = ?` 同处一个 `OR`，优化器无法用上 `idx_comments_conversation` 和 `idx_comments_message`，只能全表扫 `comments` 再逐行联表。现在拆成两条各自能走索引的查询，合并与排序在内存里做，数据量是"这个对话下的评论数"而不是"全库评论数"。
+- **数据库路径改为以 `pyproject.toml` 所在目录为基准解析（`modules/repositories/database.py`）**：原本是相对路径，取决于从哪里启动程序，从仓库根目录启动和从 `apps/server` 启动会落到两个不同的库上，数据看起来"丢了"其实只是找错了地方。现在解析为绝对路径，测试阶段仍落在 `data/raw` 下，完成后再迁回 `data`。
+- **日志脱敏的边界写进注释（`utils/logging.py`）**：明确脱敏只覆盖 `extra` 字段的"名字"，不检查字段的"内容"，因此消息正文里放什么由调用方负责。刻意不做基于内容的猜测式脱敏：正则匹配正文既会漏掉变形写法，又会把正常内容误伤成 `***`，反而让人以为日志是安全的。
+- 全量测试 154 项通过（新增的文本键带来 4 项参数化用例）；`ruff` 无新增问题（剩余 12 项 `E501` 为既有问题）；`pyright` 在 `basic` 模式下 0 错误。另用临时脚本端到端验证了枚举往返、未知 `source_type` 兜底、导入原子性、评论聚合不串对话、时间戳不被覆盖，验证后已删除脚本。
+
 ### 2026-09-19（Web API 落地与共享连接并发修复）
 
 - 新增 `api/schemas.py`：请求与响应模型。响应模型刻意不复用领域模型，而是逐字段声明，`ConversationSummaryResponse` 同时提供 `from_view()` 与 `from_model()` 两个构造入口，前者用于列表查询，后者用于发布状态切换——发布接口返回的是领域模型 `Conversation`，直接序列化会把 `source_archive`、`source_entry`、`import_batch_id` 这些内部字段泄露出去。`MarkCreateRequest` 只带 `mark_type`，消息标识由路径给出，避免路径与请求体两处都能指定同一个值而产生分歧。
@@ -190,7 +209,7 @@
 
 - `apps/server/src/modules/services/importing.py`
   - 更复杂的错误恢复和更多导入边界规则尚未实现。
-  - 同一个批次内的部分失败目前按整体回滚处理，是否要允许"部分成功"的批次语义待定。
+  - 批次状态已收敛为 `success` / `failed` 两档：单条解析失败只记入 `failed_count` 与 `error_summary`，不中止整次导入，也不改变批次状态；"部分成功"这一档已明确取消，不再作为待定项。
 
 - `apps/server/src/modules/services/querying.py`
   - 复杂搜索、筛选、排序和分页尚未实现。
@@ -212,6 +231,7 @@
 
 - `apps/server/src/modules/repositories/database.py`
   - 基础连接和事务功能已完成；未来可能根据数据库迁移和模型演化需求扩展。
+  - 默认数据库路径以 `pyproject.toml` 所在目录（即 `apps/server`）为基准解析为绝对路径，不再依赖启动时的工作目录。测试阶段落在 `data/raw/chat_vault.db`，程序完成后迁回 `data/`。
   - 当前用一把模块级可重入锁串行化全部数据库访问，这对单连接设计是正确且廉价的；若将来改为连接池，锁需要改为按连接持有，届时必须显式管理生命周期，因为 `sqlite3.Connection` 既不支持弱引用也不允许附加属性。
   - `bootstrap.py` 的 `ServiceContainer.close()` 内联了回滚与关闭，没有调用 `close_connection()`；若将来引入按连接的锁登记，这里需要同步更新。
 

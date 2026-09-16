@@ -54,6 +54,8 @@ class MessageKey(str, Enum):
     CONVERSATION_NOT_FOUND = "conversation_not_found"
     MESSAGE_NOT_FOUND = "message_not_found"
     MESSAGE_OWNER_CONVERSATION_NOT_FOUND = "message_owner_conversation_not_found"
+    COMMENT_NOT_FOUND = "comment_not_found"
+    MARK_NOT_FOUND = "mark_not_found"
 
     # === 对话, 分支, 消息与附件的结构校验 ===
     CONVERSATION_SOURCE_ID_EMPTY = "conversation_source_id_empty"
@@ -81,6 +83,8 @@ class MessageKey(str, Enum):
     IMPORT_FILE_NOT_FOUND = "import_file_not_found"
     IMPORT_PATH_NOT_FILE = "import_path_not_file"
     IMPORT_FORMAT_MISMATCH = "import_format_mismatch"
+    IMPORT_RESULT_EMPTY = "import_result_empty"
+    IMPORT_CONVERSATION_SAVE_FAILED = "import_conversation_save_failed"
 
     # === 外部标识符命名空间 ===
     SOURCE_NAMESPACE_EMPTY = "source_namespace_empty"
@@ -115,6 +119,8 @@ TEXTS: dict[MessageKey, str] = {
     MessageKey.MESSAGE_OWNER_CONVERSATION_NOT_FOUND: (
         "消息 {message_source_id} 所属对话不存在"
     ),
+    MessageKey.COMMENT_NOT_FOUND: "评论 {comment_id} 不存在",
+    MessageKey.MARK_NOT_FOUND: "标记 {mark_id} 不存在",
 
     MessageKey.CONVERSATION_SOURCE_ID_EMPTY: "对话标识不能为空",
     MessageKey.CONVERSATION_TITLE_EMPTY: "对话标题不能为空",
@@ -154,6 +160,8 @@ TEXTS: dict[MessageKey, str] = {
     MessageKey.IMPORT_FORMAT_MISMATCH: (
         "输入文件格式与适配器不匹配: {path} (format_key={format_key})"
     ),
+    MessageKey.IMPORT_RESULT_EMPTY: "解析结果既没有 conversation, 也没有 error",
+    MessageKey.IMPORT_CONVERSATION_SAVE_FAILED: "保存会话失败: {reason}",
 
     MessageKey.SOURCE_NAMESPACE_EMPTY: "来源类型和原始标识不能为空",
     MessageKey.SOURCE_NAMESPACE_RAW_PADDED: "原始标识不能以空白字符开头或结尾",

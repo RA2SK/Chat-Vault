@@ -7,9 +7,9 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Iterator
 
-from core.enums import ImportStatus, SourceType
+from core.enums import AttachmentType, ImportStatus, MessageRole, SourceType
 from core.exceptions import ImportFailedError, ValidationError
-from core.messages import MessageKey
+from core.messages import MessageKey, render
 from core.models import (
     Attachment,
     Branch,
@@ -107,13 +107,16 @@ class ImportService:
 
         # === 重复导入检测 ===
         # 同一份文件内容已经成功导入过时, 直接返回原批次, 不重复写入库
-        duplicate = self.find_duplicate_import(_hash_file(path))
+        # 摘要只算一次, 批次记录直接复用, 避免对同一个文件读两遍
+        file_hash = _hash_file(path)
+        duplicate = self.find_duplicate_import(file_hash)
         if duplicate is not None:
             return duplicate
 
         # === 创建批次记录 ===
         import_batch = self._create_import_batch(
             path=path,
+            file_hash=file_hash,
             format_key=format_key,
             source_type=source_type,
         )
@@ -124,9 +127,14 @@ class ImportService:
                 self._handle_parse_result(result, import_batch)
 
         except Exception as exc:
-
+            # 批次记录本身也要落库, 否则失败原因只存在于内存里, 调用方无从查证.
+            # 这里刻意不把异常文本写进 error_summary: 异常文本是给开发者看的,
+            # 可能带路径和内部细节, 而 error_summary 是面向调用方的字段.
             import_batch.status = ImportStatus.FAILED
-            import_batch.error_summary = str(exc)
+            import_batch.error_summary = render(
+                MessageKey.IMPORT_CONVERSATION_SAVE_FAILED,
+                reason=type(exc).__name__,
+            )
             import_batch.finished_at = datetime.now(timezone.utc)
 
             with transaction(self.connection):
@@ -163,6 +171,7 @@ class ImportService:
     def _create_import_batch(
         self,
         path: Path,
+        file_hash: str,
         format_key: str,
         source_type: SourceType,
     ) -> ImportBatch:
@@ -172,7 +181,7 @@ class ImportService:
 
         import_batch = ImportBatch(
             file_name=path.name,
-            file_hash=_hash_file(path),
+            file_hash=file_hash,
             started_at=import_time,
             status=ImportStatus.SUCCESS,
             total_count=0,
@@ -210,7 +219,7 @@ class ImportService:
         if result.conversation is None:                 
             self._record_error(
                 import_batch,
-                "解析结果既没有 conversation, 也没有 error",
+                render(MessageKey.IMPORT_RESULT_EMPTY),
                 source_id=result.source_id,
                 source_ref=result.source_ref,
             )
@@ -222,7 +231,10 @@ class ImportService:
         except Exception as exc:
             self._record_error(
                 import_batch,
-                f"保存会话失败: {exc}",
+                render(
+                    MessageKey.IMPORT_CONVERSATION_SAVE_FAILED,
+                    reason=type(exc).__name__,
+                ),
                 source_id=result.source_id,
                 source_ref=result.source_ref,
             )
@@ -305,20 +317,21 @@ class ImportService:
         self,
         attachment: Attachment,
     ) -> None:
-        """保存或更新一个附件"""
+        """保存或更新一个附件
 
-        existing = next(
-            (
-                item
-                for item in self.attachment_repository.list_by_message(
-                    attachment.message_source_id
-                )
-                if item.source_ref == attachment.source_ref
-            ),
-            None,
-        )
+        附件的主键是 (message_source_id, source_ref), 因此判断"是否已存在"
+        只需要按 source_ref 查一次. 这里把该消息的附件一次性取成字典, 避免
+        每条附件都重新查一遍库.
+        """
 
-        if existing is None:
+        existing_by_ref = {
+            item.source_ref: item
+            for item in self.attachment_repository.list_by_message(
+                attachment.message_source_id
+            )
+        }
+
+        if attachment.source_ref not in existing_by_ref:
             self.attachment_repository.create(attachment)
         else:
             self.attachment_repository.update(attachment)
@@ -369,7 +382,7 @@ class ImportService:
                     )
                 message_positions.add(message.position)
 
-                if message.role not in {"user", "assistant", "system"}:
+                if message.role not in set(MessageRole):
                     raise ValidationError(
                         MessageKey.MESSAGE_ROLE_UNSUPPORTED,
                         role=message.role,
@@ -389,7 +402,7 @@ class ImportService:
                         raise ValidationError(
                             MessageKey.ATTACHMENT_SOURCE_REF_EMPTY
                         )
-                    if attachment.attach_type not in {"image", "file", "other"}:
+                    if attachment.attach_type not in set(AttachmentType):
                         raise ValidationError(
                             MessageKey.ATTACHMENT_TYPE_UNSUPPORTED,
                             attach_type=attachment.attach_type,
@@ -413,16 +426,18 @@ class ImportService:
 
 
     def _finalize_import_batch(self, import_batch: ImportBatch) -> None:
-        """根据导入统计结果更新批次最终状态"""
+        """根据导入统计结果更新批次最终状态
+
+        单条解析失败只体现在 `failed_count` 和 `error_summary` 上, 不改变批次
+        状态: 批次状态回答的是"这次导入有没有整体成立", 而不是"有没有瑕疵".
+        """
 
         import_batch.finished_at = datetime.now(timezone.utc)
 
-        if import_batch.failed_count == 0:
-            import_batch.status = ImportStatus.SUCCESS
-        elif import_batch.success_count == 0:
+        if import_batch.success_count == 0 and import_batch.failed_count > 0:
             import_batch.status = ImportStatus.FAILED
         else:
-            import_batch.status = ImportStatus.PARTIAL
+            import_batch.status = ImportStatus.SUCCESS
 
 
     def _record_warning(

@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from core.enums import MarkType
-from core.exceptions import NotFoundError
+from core.exceptions import NotAuthenticatedError, NotFoundError
 from core.messages import MessageKey
 from core.models import AdminMark, Message
 from core.types import AdminMarkId
@@ -59,7 +59,9 @@ class ModerationService:
                 message_source_id=message_source_id,
             )
 
-        assert user is not None
+        if user is None:
+            raise NotAuthenticatedError(MessageKey.AUTHENTICATION_REQUIRED)
+
         mark = AdminMark(
             message_source_id=message_source_id,
             mark_type=mark_type,
@@ -79,7 +81,13 @@ class ModerationService:
         require_admin(user)
 
         with transaction(self.admin_mark_repository.connection):
-            self.admin_mark_repository.soft_delete(mark_id)
+            deleted = self.admin_mark_repository.soft_delete(mark_id)
+
+        if not deleted:
+            raise NotFoundError(
+                MessageKey.MARK_NOT_FOUND,
+                mark_id=mark_id,
+            )
 
 
     def list_marks(

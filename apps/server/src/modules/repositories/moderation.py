@@ -62,10 +62,12 @@ class AdminMarkRepository:
         return marks
 
 
-    def soft_delete(self, mark_id: AdminMarkId) -> None:
-        """软删除一个管理员标记"""
+    def soft_delete(self, mark_id: AdminMarkId) -> bool:
+        """软删除一个管理员标记, 返回是否真的删掉了一行"""
 
-        self.connection.execute(
-            "UPDATE admin_marks SET is_deleted = 1 WHERE id = ?",
+        cursor = self.connection.execute(
+            "UPDATE admin_marks SET is_deleted = 1 WHERE id = ? AND is_deleted = 0",
             (mark_id,),
         )
+
+        return cursor.rowcount > 0

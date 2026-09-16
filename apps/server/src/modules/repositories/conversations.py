@@ -65,7 +65,12 @@ class ConversationRepository:
 
 
     def update(self, conversation: Conversation) -> None:
-        """更新一个对话"""
+        """更新一个对话
+
+        刻意不写 created_at / updated_at: 时间戳由导入层按备份内容决定, 是
+        数据的一部分, 不是"这次写入发生在什么时候". 让 update 顺手刷新时间戳
+        会把重复导入变成一次内容变更, 也会让时间戳失去可追溯性.
+        """
 
         self.connection.execute(
             """
@@ -74,8 +79,6 @@ class ConversationRepository:
                 title = ?,
                 source_archive = ?,
                 source_entry = ?,
-                created_at = ?,
-                updated_at = ?,
                 is_published = ?,
                 import_batch_id = ?
             WHERE source_id = ?
@@ -85,8 +88,6 @@ class ConversationRepository:
                 conversation.title,
                 conversation.source_archive,
                 conversation.source_entry,
-                to_db_datetime(conversation.created_at),
-                to_db_datetime(conversation.updated_at),
                 int(conversation.is_published),
                 conversation.import_batch_id,
                 conversation.source_id,
@@ -205,6 +206,9 @@ class BranchRepository:
 
         不改变分支所属的对话: 分支归属由首次导入时的对话决定, 迁移分支
         属于内容图重构, 不属于重复导入的处理范围.
+
+        与对话的 update 同理, 这里不写 created_at / updated_at: 时间戳由导入层
+        按备份内容决定, 不是写入时刻.
         """
 
         self.connection.execute(
@@ -212,16 +216,12 @@ class BranchRepository:
             UPDATE branches
             SET branch_index = ?,
                 fork_message_source_id = ?,
-                created_at = ?,
-                updated_at = ?,
                 is_current = ?
             WHERE source_id = ?
             """,
             (
                 branch.index,
                 branch.fork_message_source_id,
-                to_db_datetime(branch.created_at),
-                to_db_datetime(branch.updated_at),
                 int(branch.is_current),
                 branch.source_id,
             ),

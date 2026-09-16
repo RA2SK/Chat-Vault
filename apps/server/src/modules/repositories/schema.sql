@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS import_batches (
     started_at TEXT NOT NULL,
     finished_at TEXT,
     status TEXT NOT NULL
-        CHECK (status IN ('success', 'partial', 'failed')),
+        CHECK (status IN ('success', 'failed')),
     total_count INTEGER NOT NULL DEFAULT 0
         CHECK (total_count >= 0),
     success_count INTEGER NOT NULL DEFAULT 0

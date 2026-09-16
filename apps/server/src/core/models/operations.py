@@ -14,7 +14,7 @@ class ImportBatch:
     file_name: str
     file_hash: str                                  # 整个备份文件的 SHA-256, 识别重复导入
     started_at: datetime
-    status: ImportStatus                            # "success" | "partial" | "failed"
+    status: ImportStatus                            # "success" | "failed"
     total_count: int
     success_count: int
     failed_count: int
