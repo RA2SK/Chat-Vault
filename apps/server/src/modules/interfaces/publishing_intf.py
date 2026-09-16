@@ -105,14 +105,14 @@ class PublicationServiceContract(Protocol):
     def publish(self, user: UserView | None, conversation_source_id: str) -> Conversation:
         """发布一个对话, 需要管理员权限
 
-        对话不存在时抛出 LookupError, 权限不足时抛出 PermissionError
+        对话不存在时抛出 NotFoundError, 权限不足时抛出 PermissionDeniedError
         """
         ...
 
     def unpublish(self, user: UserView | None, conversation_source_id: str) -> Conversation:
         """隐藏一个对话, 需要管理员权限
 
-        对话不存在时抛出 LookupError, 权限不足时抛出 PermissionError
+        对话不存在时抛出 NotFoundError, 权限不足时抛出 PermissionDeniedError
         """
         ...
 

@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Iterator
 
 from core.enums import ImportStatus, SourceType
+from core.exceptions import ImportFailedError, ValidationError
+from core.messages import MessageKey
 from core.models import (
     Attachment,
     Branch,
@@ -69,15 +71,16 @@ class ImportService:
         path = Path(path)
 
         if not path.exists():
-            raise FileNotFoundError(f"导入文件不存在: {path}")
+            raise ImportFailedError(MessageKey.IMPORT_FILE_NOT_FOUND, path=path)
 
         if not path.is_file():
-            raise ValueError(f"导入路径不是文件: {path}")
+            raise ImportFailedError(MessageKey.IMPORT_PATH_NOT_FILE, path=path)
 
         if not importer.detect(path):
-            raise ValueError(
-                f"输入文件格式与适配器不匹配: {path} "
-                f"(format_key={importer.format_key})"
+            raise ImportFailedError(
+                MessageKey.IMPORT_FORMAT_MISMATCH,
+                path=path,
+                format_key=importer.format_key,
             )
 
         results = importer.parse(path)
@@ -325,63 +328,74 @@ class ImportService:
         """校验对话、分支、消息和附件之间的业务关系"""
 
         if not conversation.source_id.strip():
-            raise ValueError("Conversation.source_id 不能为空")
+            raise ValidationError(MessageKey.CONVERSATION_SOURCE_ID_EMPTY)
         if not conversation.title.strip():
-            raise ValueError("Conversation.title 不能为空")
+            raise ValidationError(MessageKey.CONVERSATION_TITLE_EMPTY)
         if not conversation.source_type.strip():
-            raise ValueError("Conversation.source_type 不能为空")
+            raise ValidationError(MessageKey.CONVERSATION_SOURCE_TYPE_EMPTY)
 
         branch_source_ids: set[str] = set()
         for branch in conversation.branches:
             if not branch.source_id.strip():
-                raise ValueError("Branch.source_id 不能为空")
+                raise ValidationError(MessageKey.BRANCH_SOURCE_ID_EMPTY)
             if branch.source_id in branch_source_ids:
-                raise ValueError(
-                    f"Conversation 中存在重复的 Branch.source_id: {branch.source_id}"
+                raise ValidationError(
+                    MessageKey.BRANCH_SOURCE_ID_DUPLICATED,
+                    branch_source_id=branch.source_id,
                 )
             branch_source_ids.add(branch.source_id)
 
             if branch.index < 0:
-                raise ValueError("Branch.index 不能小于 0")
+                raise ValidationError(MessageKey.BRANCH_INDEX_NEGATIVE)
 
             message_source_ids: set[str] = set()
             message_positions: set[int] = set()
             for message in branch.messages:
                 if not message.source_id.strip():
-                    raise ValueError("Message.source_id 不能为空")
+                    raise ValidationError(MessageKey.MESSAGE_SOURCE_ID_EMPTY)
                 if message.source_id in message_source_ids:
-                    raise ValueError(
-                        f"Branch 中存在重复的 Message.source_id: {message.source_id}"
+                    raise ValidationError(
+                        MessageKey.MESSAGE_SOURCE_ID_DUPLICATED,
+                        message_source_id=message.source_id,
                     )
                 message_source_ids.add(message.source_id)
 
                 if message.position < 0:
-                    raise ValueError("Message.position 不能小于 0")
+                    raise ValidationError(MessageKey.MESSAGE_POSITION_NEGATIVE)
                 if message.position in message_positions:
-                    raise ValueError(
-                        f"Branch 中存在重复的 Message.position: {message.position}"
+                    raise ValidationError(
+                        MessageKey.MESSAGE_POSITION_DUPLICATED,
+                        position=message.position,
                     )
                 message_positions.add(message.position)
 
                 if message.role not in {"user", "assistant", "system"}:
-                    raise ValueError(f"不支持的消息角色: {message.role}")
+                    raise ValidationError(
+                        MessageKey.MESSAGE_ROLE_UNSUPPORTED,
+                        role=message.role,
+                    )
 
                 for attachment in message.attachments:
                     if not attachment.message_source_id.strip():
-                        raise ValueError("Attachment.message_source_id 不能为空")
+                        raise ValidationError(
+                            MessageKey.ATTACHMENT_MESSAGE_SOURCE_ID_EMPTY
+                        )
                     if attachment.message_source_id != message.source_id:
-                        raise ValueError(
-                            "附件引用的消息与所属消息不一致: "
-                            f"{attachment.message_source_id}"
+                        raise ValidationError(
+                            MessageKey.ATTACHMENT_MESSAGE_MISMATCH,
+                            message_source_id=attachment.message_source_id,
                         )
                     if not attachment.source_ref.strip():
-                        raise ValueError("Attachment.source_ref 不能为空")
+                        raise ValidationError(
+                            MessageKey.ATTACHMENT_SOURCE_REF_EMPTY
+                        )
                     if attachment.attach_type not in {"image", "file", "other"}:
-                        raise ValueError(
-                            f"不支持的附件类型: {attachment.attach_type}"
+                        raise ValidationError(
+                            MessageKey.ATTACHMENT_TYPE_UNSUPPORTED,
+                            attach_type=attachment.attach_type,
                         )
                     if attachment.size is not None and attachment.size < 0:
-                        raise ValueError("Attachment.size 不能小于 0")
+                        raise ValidationError(MessageKey.ATTACHMENT_SIZE_NEGATIVE)
 
 
     def _find_existing_conversation(
@@ -391,7 +405,7 @@ class ImportService:
         """根据来源 ID 查找已有对话, 用于实现重复导入幂等去重"""
 
         if not conversation.source_id.strip():
-            raise ValueError("查找已有对话前必须存在 source_id")
+            raise ValidationError(MessageKey.CONVERSATION_SOURCE_ID_REQUIRED)
 
         return self.conversation_repository.get_by_source_id(
             conversation.source_id

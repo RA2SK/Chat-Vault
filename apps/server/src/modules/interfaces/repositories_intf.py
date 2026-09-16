@@ -62,7 +62,7 @@ class BranchStore(Protocol):
     def create(self, branch: Branch, conversation_source_id: str) -> None:
         """保存一个分支, 并挂到指定对话下
 
-        父节点不存在时抛出 ValueError, 而不是等待外键约束在提交时报错
+        父节点不存在时抛出 NotFoundError, 而不是等待外键约束在提交时报错
         """
         ...
 
@@ -88,7 +88,7 @@ class MessageStore(Protocol):
     def create(self, message: Message, branch_source_id: str) -> None:
         """保存一条消息, 并挂到指定分支下
 
-        父节点不存在时抛出 ValueError, 而不是等待外键约束在提交时报错
+        父节点不存在时抛出 NotFoundError, 而不是等待外键约束在提交时报错
         """
         ...
 
@@ -146,7 +146,7 @@ class CommentStore(Protocol):
         """保存一条评论
 
         target_type 与 conversation_source_id / message_source_id 的组合必须自洽,
-        否则抛出 ValueError
+        否则抛出 ValidationError
         """
         ...
 

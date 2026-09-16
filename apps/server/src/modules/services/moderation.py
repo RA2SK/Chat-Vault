@@ -3,6 +3,8 @@
 from datetime import datetime, timezone
 
 from core.enums import MarkType
+from core.exceptions import NotFoundError
+from core.messages import MessageKey
 from core.models import AdminMark, Message
 from core.types import AdminMarkId
 from modules.interfaces.users_intf import UserView
@@ -54,7 +56,10 @@ class ModerationService:
 
         message = self.message_repository.get_by_source_id(message_source_id)
         if message is None:
-            raise LookupError(f"消息 {message_source_id} 不存在")
+            raise NotFoundError(
+                MessageKey.MESSAGE_NOT_FOUND,
+                message_source_id=message_source_id,
+            )
 
         assert user is not None
         mark = AdminMark(

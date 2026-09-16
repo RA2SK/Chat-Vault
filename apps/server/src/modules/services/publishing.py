@@ -1,5 +1,7 @@
 # 以下为预先准备好的权限校验代码, 不是本文件的主体内容
 
+from core.exceptions import NotFoundError
+from core.messages import MessageKey
 from core.models import Attachment, Branch, Conversation, Message
 from modules.interfaces.publishing_intf import (
     PublishedConversationSummary,
@@ -186,7 +188,10 @@ class PublishingService:
             conversation_source_id,
         )
         if conversation is None:
-            raise LookupError(f"对话 {conversation_source_id} 不存在")
+            raise NotFoundError(
+                MessageKey.CONVERSATION_NOT_FOUND,
+                conversation_source_id=conversation_source_id,
+            )
 
         conversation.is_published = is_published
 

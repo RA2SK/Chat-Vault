@@ -3,6 +3,12 @@
 from datetime import datetime, timezone
 
 from core.enums import CommentTarget
+from core.exceptions import (
+    NotFoundError,
+    PermissionDeniedError,
+    ValidationError,
+)
+from core.messages import MessageKey
 from core.models import Comment, Conversation
 from core.types import CommentId
 from modules.interfaces.users_intf import UserView
@@ -39,10 +45,9 @@ class CommentService:
         self.comment_repository = comment_repository
         self.query_service = query_service
 
-
     def create(
         self,
-            user: UserView | None,
+        user: UserView | None,
         target_type: CommentTarget,
         target_source_id: str,
         content: str,
@@ -51,7 +56,7 @@ class CommentService:
         """在对话或消息下创建一条评论"""
 
         if not content:
-            raise ValueError("评论内容不能为空")
+            raise ValidationError(MessageKey.COMMENT_CONTENT_EMPTY)
 
         conversation_source_id: str | None = None
         message_source_id: str | None = None
@@ -59,27 +64,39 @@ class CommentService:
         if target_type == CommentTarget.CONVERSATION:
             conversation = self.query_service.get_conversation(target_source_id)
             if conversation is None:
-                raise LookupError(f"对话 {target_source_id} 不存在")
+                raise NotFoundError(
+                    MessageKey.CONVERSATION_NOT_FOUND,
+                    conversation_source_id=target_source_id,
+                )
             conversation_source_id = target_source_id
             target = conversation
         elif target_type == CommentTarget.MESSAGE:
             message = self.query_service.get_message(target_source_id)
             if message is None:
-                raise LookupError(f"消息 {target_source_id} 不存在")
+                raise NotFoundError(
+                    MessageKey.MESSAGE_NOT_FOUND,
+                    message_source_id=target_source_id,
+                )
             message_source_id = target_source_id
             owner_conversation_source_id = (
                 self.query_service.get_message_conversation_source_id(target_source_id)
             )
             if owner_conversation_source_id is None:
-                raise LookupError(f"消息 {target_source_id} 所属对话不存在")
+                raise NotFoundError(
+                    MessageKey.MESSAGE_OWNER_CONVERSATION_NOT_FOUND,
+                    message_source_id=target_source_id,
+                )
             target = self.query_service.get_conversation(owner_conversation_source_id)
             if target is None:
-                raise LookupError(f"消息 {target_source_id} 所属对话不存在")
+                raise NotFoundError(
+                    MessageKey.MESSAGE_OWNER_CONVERSATION_NOT_FOUND,
+                    message_source_id=target_source_id,
+                )
         else:
-            raise ValueError("target_type 必须是 conversation 或 message")
+            raise ValidationError(MessageKey.COMMENT_TARGET_INVALID)
 
         if not can_create_comment(user, target):
-            raise PermissionError("无权在该目标下创建评论")
+            raise PermissionDeniedError(MessageKey.COMMENT_CREATE_FORBIDDEN)
 
         assert user is not None
         comment = Comment(

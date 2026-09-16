@@ -3,6 +3,14 @@
 from datetime import datetime, timezone
 
 from core.enums import UserRole
+from core.exceptions import (
+    ConflictError,
+    NotAuthenticatedError,
+    NotFoundError,
+    PermissionDeniedError,
+    ValidationError,
+)
+from core.messages import MessageKey
 from core.models import User
 from core.types import UserId
 from modules.interfaces.users_intf import UserView
@@ -34,14 +42,14 @@ def require_admin(user: UserView | None) -> None:
     """要求当前用户必须是管理员，否则抛出权限异常"""
 
     if not is_admin(user):
-        raise PermissionError("需要管理员权限")
+        raise PermissionDeniedError(MessageKey.ADMIN_REQUIRED)
 
 
 def require_authenticated(user: UserView | None) -> None:
     """要求当前用户必须已登录，否则抛出权限异常"""
 
     if not is_authenticated(user):
-        raise PermissionError("需要登录后才能执行此操作")
+        raise NotAuthenticatedError(MessageKey.AUTHENTICATION_REQUIRED)
 
 
 class UserService:
@@ -81,7 +89,7 @@ class UserService:
         """创建用户并落库, 用户名与密码的校验由本方法统一负责"""
 
         if not username or not password:
-            raise ValueError("用户名和密码不能为空")
+            raise ValidationError(MessageKey.CREDENTIALS_EMPTY)
 
         user = User(
             username=username,
@@ -93,7 +101,10 @@ class UserService:
         # 重名检查与写入放在同一个事务里, 避免两次并发注册都通过检查
         with transaction(self.user_repository.connection):
             if self.user_repository.get_by_username(username) is not None:
-                raise ValueError(f"用户名 {username} 已存在")
+                raise ConflictError(
+                    MessageKey.USERNAME_ALREADY_EXISTS,
+                    username=username,
+                )
 
             self.user_repository.create(user)
 
@@ -165,14 +176,14 @@ class UserService:
         require_authenticated(user)
 
         if not new_password:
-            raise ValueError("新密码不能为空")
+            raise ValidationError(MessageKey.NEW_PASSWORD_EMPTY)
 
         current = self.user_repository.get_by_id(user.id)
         if current is None:
-            raise LookupError(f"用户 {user.id} 不存在")
+            raise NotFoundError(MessageKey.USER_NOT_FOUND, user_id=user.id)
 
         if not verify_password(old_password, current.password_hash):
-            raise PermissionError("旧密码不正确")
+            raise PermissionDeniedError(MessageKey.PASSWORD_INCORRECT)
 
         current.password_hash = hash_password(new_password)
 

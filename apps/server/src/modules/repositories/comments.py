@@ -7,6 +7,8 @@ import sqlite3
 from dataclasses import dataclass
 
 from core.enums import CommentTarget
+from core.exceptions import ValidationError
+from core.messages import MessageKey
 from core.models import Comment
 from core.types import CommentId
 from modules.repositories.mappings import to_comment, to_db_datetime
@@ -23,16 +25,20 @@ class CommentRepository:
 
         if comment.target_type == CommentTarget.CONVERSATION:
             if comment.conversation_source_id is None:
-                raise ValueError("对话评论必须设置 conversation_source_id")
+                raise ValidationError(
+                    MessageKey.COMMENT_CONVERSATION_TARGET_REQUIRED
+                )
             if comment.message_source_id is not None:
-                raise ValueError("对话评论不能设置 message_source_id")
+                raise ValidationError(
+                    MessageKey.COMMENT_CONVERSATION_TARGET_FORBIDDEN
+                )
         elif comment.target_type == CommentTarget.MESSAGE:
             if comment.message_source_id is None:
-                raise ValueError("消息评论必须设置 message_source_id")
+                raise ValidationError(MessageKey.COMMENT_MESSAGE_TARGET_REQUIRED)
             if comment.conversation_source_id is not None:
-                raise ValueError("消息评论不能设置 conversation_source_id")
+                raise ValidationError(MessageKey.COMMENT_MESSAGE_TARGET_FORBIDDEN)
         else:
-            raise ValueError("target_type 必须是 conversation 或 message")
+            raise ValidationError(MessageKey.COMMENT_TARGET_INVALID)
 
         self.connection.execute(
             """

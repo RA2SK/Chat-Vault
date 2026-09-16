@@ -7,6 +7,8 @@
 import sqlite3
 from dataclasses import dataclass
 
+from core.exceptions import NotFoundError
+from core.messages import MessageKey
 from core.models import Branch, Conversation
 from modules.repositories.mappings import to_branch, to_conversation, to_db_datetime
 
@@ -147,7 +149,10 @@ class BranchRepository:
         ).fetchone()
 
         if row is None:
-            raise ValueError(f"对话不存在, 无法挂载分支: {conversation_source_id}")
+            raise NotFoundError(
+                MessageKey.CONVERSATION_BRANCH_ANCHOR_MISSING,
+                conversation_source_id=conversation_source_id,
+            )
 
         return row["id"]
 

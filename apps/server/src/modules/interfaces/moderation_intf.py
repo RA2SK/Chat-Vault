@@ -46,7 +46,7 @@ class ModerationServiceContract(Protocol):
     ) -> AdminMark:
         """为消息添加一个管理员标记
 
-        消息不存在时抛出 LookupError, 权限不足时抛出 PermissionError
+        消息不存在时抛出 NotFoundError, 权限不足时抛出 PermissionDeniedError
         """
         ...
 

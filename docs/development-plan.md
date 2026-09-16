@@ -2,6 +2,20 @@
 
 ## 一、更新日志
 
+### 2026-09-18（异常体系、文本集中管理与入口文件）
+
+- 建立业务异常体系 `core/exceptions.py`：新增基类 `ChatVaultError`，以及 `ValidationError`(400)、`NotFoundError`(404)、`ConflictError`(409)、`PermissionDeniedError`(403)、`NotAuthenticatedError`(401)、`ImportFailedError`(422)、`PersistenceError`(500) 七个具体类型。每个具体类型都额外继承一个对应的内置异常（例如 `ValidationError` 同时继承 `ValueError`、`NotFoundError` 同时继承 `LookupError`、`NotAuthenticatedError` 与 `PermissionDeniedError` 同时继承 `PermissionError`），这样既有调用点的 `except ValueError` / `except LookupError` / `except PermissionError` 写法继续有效，异常分类也不再靠字符串判断。刻意没有定义 `ImportError` 这个名字，它会与内置的同名异常混淆。
+- 新增 `core/messages.py` 集中管理所有面向用户的文本：`MessageKey(str, Enum)` 定义语义键，`TEXTS` 给出每个键的模板，`render(key, **params)` 负责填充。键按语义而非代码位置命名（`CONVERSATION_NOT_FOUND`、`IMPORT_FORMAT_MISMATCH`），因为同一个函数里有十几条不同的校验失败，用“模块_文件_类_函数_报错类型”这种按位置取名的方案既无法用类型检查保护，又会出现一个函数共用一把键的粒度错配。`render()` 在调用方多传参数时直接抛 `TypeError`，避免 `str.format` 静默忽略多余参数导致文案停留在旧版本。
+- 迁移全部 48 处 `raise` 调用点：`services/` 与 `repositories/` 下的 9 个文件改为抛出业务异常并携带消息键与参数，`adapters/preprocess.py` 的 4 处 `ValueError` 改为 `ValidationError`（其中一处 `TypeError` 属于调用方用错类型，保留内置异常）。`repositories/database.py` 的连接与建表故障统一包成 `PersistenceError`，并用 `raise ... from exc` 保留原始堆栈。
+- 异常只描述、不翻译：`core` 层不出现 HTTP 状态码，状态码映射只存在于 `api/exception_handlers.py`，退出码映射只存在于 `cli.py`。两处都用精确类型查表而不是 `isinstance` 判断，漏配一项会直接暴露出来，而不会悄悄退回到父类的取值。
+- 新增 `api/exception_handlers.py`：`register_exception_handlers()` 同时注册 `ChatVaultError` 与兜底的 `Exception` 处理器。响应体固定为 `{"error": {"key": ..., "message": ...}}`，前端按稳定的 `key` 分支，不依赖会变的文案。4xx 记 `info`，5xx 记 `warning` 并带堆栈；兜底处理器是全应用唯一一处 `logger.exception`，对外只返回“服务器内部错误”，不泄露内部文本。
+- 新增 `utils/logging.py`：`configure_logging(level, *, json_output=False)` 提供文本与单行 JSON 两种格式，带毫秒级 UTC 时间戳、异常堆栈与额外字段。配置函数幂等，只移除自己安装的处理器，保留宿主进程（例如 pytest）已有的处理器；字段名中含有 `password`、`secret`、`token`、`authorization`、`credential` 等片段的额外字段会被替换成 `***`。文本目录与日志系统刻意分开：前者是给用户看的话，后者是给开发者看的记录，两者受众、生命周期和改动力度都不同。
+- 新增 `main.py`：ASGI 入口。`create_app()` 先配置日志再组装应用，因此 `uvicorn main:app` 这条生产路径不需要额外配置；`lifespan` 创建服务容器放入 `application.state.container`，并在应用停止时回滚未提交事务、关闭连接；`_boot_admin()` 读取 `CHAT_VAULT_ADMIN_USERNAME` 与 `CHAT_VAULT_ADMIN_PASSWORD`，两者齐全且库中无管理员时自动建一名，凭据缺失则静默跳过（这是“不启用自动初始化”的开关），用户名被占用只记一条错误并继续启动——自动初始化是为了方便，不该成为服务起不来的原因。环境变量：`CHAT_VAULT_DATABASE_PATH`、`CHAT_VAULT_ADMIN_USERNAME`、`CHAT_VAULT_ADMIN_PASSWORD`、`CHAT_VAULT_LOG_LEVEL`、`CHAT_VAULT_LOG_JSON`。
+- 新增 `cli.py`：命令行入口，含 `import`、`conversations`、`show`、`comments`、`create-admin` 五个子命令。结果走标准输出，日志与错误走标准错误，便于把结果直接管道给下一个命令。退出码约定为 0 成功、1 未预期异常、2 用法错误、3 输入不合法、4 不存在、5 冲突、6 需要登录、7 权限不足、8 持久化故障。管理员密码只从环境变量或交互式输入读取，刻意不提供 `--password` 参数，因为它会留在 shell 历史记录和进程列表里。容器创建也放在 `try` 之内，这样建库失败同样走统一的报错分支。
+- 新增 `tests/test_messages_and_exceptions.py`：用 `ast` 扫描全部源码，校验文本目录与实际抛出的消息键双向一致（没有缺文案的键，也没有没人用的死键），并校验每个键的占位符与调用点传入的参数名吻合，以及异常的双继承关系确实成立。
+- 更新 8 个接口契约文件的文档串，把 `Raises:` 段落里的内置异常名改为对应的业务异常名。契约只描述会抛什么，转发由上层负责。
+- 全量测试 70 项通过；`ruff` 无新增问题（剩余 12 项 `E501` 为既有问题）；`pyright` 在 `basic` 模式下 0 错误。
+
 ### 2026-09-17（契约边界收窄与展示视图落地）
 
 - 用户服务对外返回值统一收窄为 `UserView`：`register()`、`register_admin()`、`get()`、`get_by_username()` 返回视图，`authenticate()` 返回 `UserView | None`。新增 `UserView.from_model()` 逐字段复制允许暴露的字段，刻意不用 `dataclasses.asdict`，这样 `User` 以后新增字段时不会因为疏忽被自动带出去。
@@ -135,10 +149,9 @@
 
 ### 未开工
 
-- `apps/server/src/api/routes.py`、`schemas.py`、`dependencies.py`、`exception_handlers.py`：文件已建立，Web API 路由、请求响应校验、依赖提供和异常转换尚未开始。
+- `apps/server/src/api/routes.py`、`schemas.py`、`dependencies.py`：文件已建立，Web API 路由、请求响应校验和依赖提供尚未开始；`exception_handlers.py` 已完成。
 - `apps/server/src/modules/interfaces/exporting_intf.py`：内容重新打包契约已声明形状，输出端实现、Web 数据提交和落盘编排尚未开始。
-- `apps/server/src/utils/hashing.py`、`apps/server/src/utils/logging.py`：文件已建立，校验和计算与统一日志逻辑尚未开始。
-- `apps/server/src/cli.py`、`apps/server/src/main.py`：文件已建立，CLI 入口和 Web 服务启动逻辑尚未开始。`bootstrap.ensure_initial_admin()` 目前只被测试调用，等入口文件落地后应由启动流程读取环境变量并调用它。
+- `apps/server/src/utils/hashing.py`：文件已建立，校验和计算尚未开始。
 - `apps/client/src/`：前端仅建立基础目录和项目入口，对话浏览、Markdown 模拟渲染、搜索、评论和管理界面尚未开始。
 
 ## 三、已发现但尚未完成的内容
@@ -186,5 +199,5 @@
 
 - 完成 Web API 与前端之间的数据接口。
 - 完成前端对话展示、Markdown 模拟渲染、评论回传和未来下载功能。
-- 添加跨文件的统一日志处理模块，使适配器、导入服务、存储层和输出层使用一致的日志接口。
+- 适配器、导入服务、存储层和输出层尚未接入统一日志接口：`utils/logging.py` 已提供格式化与脱敏能力，但各层目前仍只有极少量日志调用点，需要随业务补齐。
 - 仓储层已对外统一以 `source_id` 标识内容对象，数据库主键不再离开持久化层；后续新增查询接口时需要继续保持这一约定。

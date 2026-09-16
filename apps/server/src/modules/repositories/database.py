@@ -5,6 +5,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
 
+from core.exceptions import PersistenceError
+from core.messages import MessageKey
+
 # 默认数据库和数据库结构文件的位置
 # 程序尚未成型, 数据库暂时生成在 data/raw 下, 完成后再迁回 data 下
 DEFAULT_DATABASE_PATH = Path("data/raw/chat_vault.db")
@@ -14,17 +17,28 @@ DEFAULT_SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 def get_connection(
     database_path: Path = DEFAULT_DATABASE_PATH,
 ) -> sqlite3.Connection:
-    """创建并配置一个 SQLite 数据库连接"""
+    """创建并配置一个 SQLite 数据库连接
 
-    database_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    Raises:
+        PersistenceError: 目录无法创建或数据库无法打开时抛出
+    """
 
-    connection = sqlite3.connect(database_path)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    
+    try:
+        database_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        connection = sqlite3.connect(database_path)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+    except (OSError, sqlite3.Error) as exc:
+        raise PersistenceError(
+            MessageKey.DATABASE_CONNECTION_FAILED,
+            database_path=str(database_path),
+            reason=str(exc),
+        ) from exc
+
     return connection
 
 
@@ -32,10 +46,21 @@ def initialize_database(
     connection: sqlite3.Connection,
     schema_path: Path = DEFAULT_SCHEMA_PATH,
 ) -> None:
-    """执行 schema.sql, 初始化数据库结构"""
+    """执行 schema.sql, 初始化数据库结构
 
-    schema_sql = schema_path.read_text(encoding="utf-8-sig")
-    connection.executescript(schema_sql)
+    Raises:
+        PersistenceError: 结构文件读取失败或 SQL 执行失败时抛出
+    """
+
+    try:
+        schema_sql = schema_path.read_text(encoding="utf-8-sig")
+        connection.executescript(schema_sql)
+    except (OSError, sqlite3.Error) as exc:
+        raise PersistenceError(
+            MessageKey.DATABASE_INITIALIZATION_FAILED,
+            schema_path=str(schema_path),
+            reason=str(exc),
+        ) from exc
 
 
 @contextmanager

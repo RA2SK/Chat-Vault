@@ -49,7 +49,7 @@ class CommentServiceContract(Protocol):
 
     def create(
         self,
-            user: UserView | None,
+        user: UserView | None,
         target_type: CommentTarget,
         target_source_id: str,
         content: str,
@@ -57,8 +57,8 @@ class CommentServiceContract(Protocol):
     ) -> Comment:
         """在对话或消息下创建一条评论
 
-        内容为空时抛出 ValueError, 目标类型非法时抛出 ValueError,
-        评论目标不存在时抛出 LookupError, 权限不足时抛出 PermissionError
+        内容为空时抛出 ValidationError, 目标类型非法时抛出 ValidationError,
+        评论目标不存在时抛出 NotFoundError, 权限不足时抛出 PermissionDeniedError
         """
         ...
 

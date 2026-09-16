@@ -109,7 +109,7 @@ class UserServiceContract(Protocol):
     def register(self, username: str, password: str) -> UserView:
         """注册一个新用户
 
-        用户名或密码为空时抛出 ValueError, 用户名已存在时抛出 ValueError.
+        用户名或密码为空时抛出 ValidationError, 用户名已存在时抛出 ConflictError.
         实现固定把新用户设为普通用户, 不接受调用方指定角色.
         需要创建管理员时使用 `register_admin`.
         """
@@ -156,8 +156,8 @@ class UserServiceContract(Protocol):
         """校验旧密码后更新用户密码
 
         只接收 `UserView`, 由实现内部按视图中的 id 取回领域模型后再接触散列.
-        用户未登录时抛出 PermissionError, 旧密码不正确时抛出 PermissionError,
-        新密码为空时抛出 ValueError, 用户已不存在时抛出 LookupError
+        用户未登录时抛出 NotAuthenticatedError, 旧密码不正确时抛出 PermissionDeniedError,
+        新密码为空时抛出 ValidationError, 用户已不存在时抛出 NotFoundError
         """
         ...
 

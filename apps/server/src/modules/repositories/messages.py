@@ -6,6 +6,8 @@ Attachment 以 (message_source_id, source_ref) 作为身份, 不额外引入代�
 import sqlite3
 from dataclasses import dataclass
 
+from core.exceptions import NotFoundError
+from core.messages import MessageKey
 from core.models import Attachment, Message
 from modules.repositories.mappings import (
     to_attachment,
@@ -30,7 +32,10 @@ class MessageRepository:
         ).fetchone()
 
         if row is None:
-            raise ValueError(f"分支不存在, 无法挂载消息: {branch_source_id}")
+            raise NotFoundError(
+                MessageKey.BRANCH_NOT_FOUND,
+                branch_source_id=branch_source_id,
+            )
 
         return row["id"]
 
@@ -174,7 +179,10 @@ class AttachmentRepository:
         ).fetchone()
 
         if row is None:
-            raise ValueError(f"消息不存在, 无法挂载附件: {message_source_id}")
+            raise NotFoundError(
+                MessageKey.MESSAGE_ATTACHMENT_ANCHOR_MISSING,
+                message_source_id=message_source_id,
+            )
 
         return row["id"]
 

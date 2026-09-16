@@ -85,7 +85,7 @@ class ImportServiceContract(Protocol):
     def import_file(self, path: Path, importer: BaseImporter) -> ImportBatch:
         """导入一个备份文件, 返回导入批次结果
 
-        适配器与文件不匹配时抛出 ValueError, 文件不存在时抛出 FileNotFoundError.
+        适配器与文件不匹配时抛出 ImportFailedError, 文件不存在时抛出 ImportFailedError.
         """
         ...
 

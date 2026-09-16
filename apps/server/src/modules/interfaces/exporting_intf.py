@@ -48,7 +48,7 @@ class ExportingService(Protocol):
     ) -> Path:
         """把一个对话重新打包并写入目标目录, 返回实际写入的文件路径
 
-        对话不存在时抛出 LookupError, 输出端与内容不兼容时抛出 ValueError.
+        对话不存在时抛出 NotFoundError, 输出端与内容不兼容时抛出 ValidationError.
         本契约不接收当前用户, 权限判断由调用方在更外层完成.
         """
         ...
