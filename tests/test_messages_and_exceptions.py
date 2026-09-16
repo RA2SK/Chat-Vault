@@ -8,6 +8,7 @@
 """
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -133,6 +134,27 @@ def test_render_returns_template_without_params() -> None:
     """无占位符的键直接返回文案本身"""
 
     assert render(MessageKey.ADMIN_REQUIRED) == TEXTS[MessageKey.ADMIN_REQUIRED]
+
+
+# 连续三个以上问号极不可能是正常中文文案, 出现即说明这条文本被编码转换损坏过
+_LOST_TEXT = re.compile(r"\?{3,}")
+
+
+@pytest.mark.parametrize("key", list(MessageKey), ids=lambda key: key.name)
+def test_text_is_not_corrupted(key: MessageKey) -> None:
+    """文案不能是被编码转换损坏过的残留
+
+    中文在缺少编码声明的管道里会被替换成问号, UTF-8 被按单字节解码则会留下
+    替换字符. 这两种损坏都不会让程序报错, 只会让用户看到一串问号或乱码,
+    因此必须由测试兜住. 历史上一度有两条文案因此变成纯问号并被提交,
+    这个用例就是为了让同类问题不再有机会通过.
+    """
+
+    text = TEXTS[key]
+
+    assert text.strip(), f"{key.name} 的文案为空"
+    assert not _LOST_TEXT.search(text), f"{key.name} 的文案疑似编码损坏: {text!r}"
+    assert "\ufffd" not in text, f"{key.name} 的文案含替换字符: {text!r}"
 
 
 def test_render_fills_placeholders() -> None:

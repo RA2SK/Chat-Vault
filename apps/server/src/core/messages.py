@@ -150,12 +150,14 @@ TEXTS: dict[MessageKey, str] = {
     MessageKey.IMPORT_FILE_NOT_FOUND: "导入文件不存在: {path}",
     MessageKey.IMPORT_PATH_NOT_FILE: "导入路径不是文件: {path}",
     MessageKey.IMPORT_FORMAT_MISMATCH: (
-        "?????????????: {path} (format_key={format_key})"
+        "输入文件格式与适配器不匹配: {path} (format_key={format_key})"
     ),
 
-    MessageKey.SOURCE_NAMESPACE_EMPTY: "?????????????",
+    MessageKey.SOURCE_NAMESPACE_EMPTY: "来源类型和原始标识不能为空",
     MessageKey.SOURCE_NAMESPACE_RAW_PADDED: "原始标识不能以空白字符开头或结尾",
-    MessageKey.SOURCE_NAMESPACE_WHITESPACE: "来源类型不能包含空白字符",
+    MessageKey.SOURCE_NAMESPACE_WHITESPACE: (
+        "来源类型不能包含空白字符, 它会被用作来源标识的前缀: {source_name}"
+    ),
     MessageKey.SOURCE_NAMESPACE_SEPARATOR: (
         "来源类型不能包含命名空间分隔符 {separator}"
     ),

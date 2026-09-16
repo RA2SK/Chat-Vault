@@ -20,7 +20,16 @@ def with_source_namespace(source_type: SourceType, raw_source_id: str) -> str:
     Raises:
         TypeError: 参数类型不正确时抛出. 这是调用方的编程错误, 不是业务状况,
             因此刻意保持为内置 TypeError, 不带提示键, 出口层也不翻译它
-        ValidationError: 参数为空、包含空白, 或来源名称含有命名空间分隔符时抛出
+        ValidationError: 下列任一情况抛出, 各自带不同的提示键:
+            来源名称或原始标识为空 (SOURCE_NAMESPACE_EMPTY);
+            原始标识首尾带空白 (SOURCE_NAMESPACE_RAW_PADDED);
+            来源名称含空白字符 (SOURCE_NAMESPACE_WHITESPACE);
+            来源名称含命名空间分隔符 (SOURCE_NAMESPACE_SEPARATOR)
+
+    来源名称取自 ``SourceType.value``, 其中 ``SourceType.CHERRY_STUDIO`` 的值
+    是 ``"cherry studio"``, 含空格, 因此它会在空白字符那一条被拦下. 这是预期
+    行为: 前缀里出现空格会让 ``source_id`` 的切分产生歧义. 前缀要用作命名空间
+    时, 需要的是不含空白的标识符, 而不是展示用的名称.
     """
 
     if not isinstance(source_type, SourceType) or not isinstance(raw_source_id, str):
@@ -37,7 +46,10 @@ def with_source_namespace(source_type: SourceType, raw_source_id: str) -> str:
         raise ValidationError(MessageKey.SOURCE_NAMESPACE_RAW_PADDED)
 
     if any(character.isspace() for character in source_name):
-        raise ValidationError(MessageKey.SOURCE_NAMESPACE_WHITESPACE)
+        raise ValidationError(
+            MessageKey.SOURCE_NAMESPACE_WHITESPACE,
+            source_name=source_name,
+        )
 
     if SOURCE_ID_SEPARATOR in source_name:
         raise ValidationError(

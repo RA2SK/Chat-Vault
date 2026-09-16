@@ -1,5 +1,3 @@
-# 以下为预先准备好的权限校验代码, 不是本文件的主体内容
-
 from core.exceptions import NotFoundError
 from core.messages import MessageKey
 from core.models import Attachment, Branch, Conversation, Message

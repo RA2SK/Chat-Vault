@@ -1,5 +1,3 @@
-# 以下为预先准备好的权限校验代码, 不是本文件的主体内容
-
 from datetime import datetime, timezone
 
 from core.enums import MarkType
@@ -46,7 +44,7 @@ class ModerationService:
 
     def add_mark(
         self,
-            user: UserView | None,
+        user: UserView | None,
         message_source_id: str,
         mark_type: MarkType,
     ) -> AdminMark:

@@ -1,5 +1,3 @@
-# 以下为预先准备好的权限校验代码, 不是本文件的主体内容
-
 from datetime import datetime, timezone
 
 from core.enums import CommentTarget
