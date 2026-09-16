@@ -1,6 +1,7 @@
 from core.exceptions import NotFoundError
 from core.messages import MessageKey
 from core.models import Attachment, Branch, Conversation, Message
+from core.pagination import Page, PageResult
 from modules.interfaces.publishing_intf import (
     PublishedConversationSummary,
     PublishedConversationView,
@@ -96,6 +97,24 @@ def _current_branch(detail: ConversationDetail) -> Branch | None:
     )
 
 
+def _current_branch_from(branches: list[Branch]) -> Branch | None:
+    """从分支列表里取出展示使用的当前链, 不依赖已加载的消息
+
+    与 `_current_branch` 的区别是拿不到"消息最多的一条"这个判据, 因为分页
+    展示场景下消息是按页取的. 因此退化为取第一条, 而不是为了凑出判据去
+    加载全部消息 —— 那会让分页失去意义.
+    """
+
+    for branch in branches:
+        if branch.is_current:
+            return branch
+
+    if not branches:
+        return None
+
+    return branches[0]
+
+
 def can_view_conversation(user: UserView | None, conversation: Conversation) -> bool:
     """判断用户是否可以查看指定对话"""
 
@@ -126,18 +145,22 @@ class PublishingService:
     def list_for_view(
         self,
         user: UserView | None,
-    ) -> list[PublishedConversationSummary]:
-        """按用户权限返回可查看的对话列表"""
+        page: Page,
+    ) -> PageResult[PublishedConversationSummary]:
+        """按用户权限返回一页可查看的对话列表"""
 
         if is_admin(user):
-            conversations = self.query_service.list_conversations()
+            result = self.query_service.list_conversations(page)
         else:
-            conversations = self.query_service.list_published_conversations()
+            result = self.query_service.list_published_conversations(page)
 
-        return [
-            to_published_conversation_summary(conversation)
-            for conversation in conversations
-        ]
+        return PageResult(
+            items=[
+                to_published_conversation_summary(conversation)
+                for conversation in result.items
+            ],
+            has_more=result.has_more,
+        )
 
 
     def get_conversation_for_view(
@@ -159,6 +182,56 @@ class PublishingService:
             return None
 
         return to_published_conversation_view(detail)
+
+
+    def list_messages_for_view(
+        self,
+        user: UserView | None,
+        conversation_source_id: str,
+        branch_source_id: str | None,
+        page: Page,
+    ) -> PageResult[PublishedMessageView] | None:
+        """按用户权限分页获取一个对话下某个分支的消息"""
+
+        conversation = self.query_service.get_conversation(conversation_source_id)
+        if conversation is None:
+            return None
+
+        if not can_view_conversation(user, conversation):
+            return None
+
+        branches = self.query_service.list_branches(conversation_source_id)
+
+        if branch_source_id is None:
+            branch = _current_branch_from(branches)
+        else:
+            branch = next(
+                (
+                    candidate
+                    for candidate in branches
+                    if candidate.source_id == branch_source_id
+                ),
+                None,
+            )
+
+        if branch is None:
+            return None
+
+        result = self.query_service.list_messages(branch.source_id, page)
+        attachments = self.query_service.list_attachments_for_messages(
+            [message.source_id for message in result.items],
+        )
+
+        return PageResult(
+            items=[
+                to_published_message_view(
+                    message,
+                    attachments.get(message.source_id, []),
+                )
+                for message in result.items
+            ],
+            has_more=result.has_more,
+        )
 
 
     def publish(self, user: UserView | None, conversation_source_id: str) -> Conversation:

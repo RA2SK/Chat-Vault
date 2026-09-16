@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from core.exceptions import NotFoundError
 from core.messages import MessageKey
 from core.models import Branch, Conversation
+from core.pagination import PageResult
 from modules.repositories.mappings import to_branch, to_conversation, to_db_datetime
 
 
@@ -95,26 +96,60 @@ class ConversationRepository:
         )
 
 
-    def list_all(self) -> list[Conversation]:
-        """查询所有对话"""
+    def list_all(
+        self,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> PageResult[Conversation]:
+        """查询所有对话
+
+        limit 为 None 表示不分页, 供命令行和内部调用方取全量. 分页时多取
+        一行来判断 has_more, 避免额外一次 COUNT(*) 全表扫描.
+        """
+
+        if limit is None:
+            rows = self.connection.execute(
+                """
+                SELECT *
+                FROM conversations
+                ORDER BY updated_at DESC, id DESC
+                """
+            ).fetchall()
+            return PageResult(items=[to_conversation(row) for row in rows])
 
         rows = self.connection.execute(
             """
             SELECT *
             FROM conversations
             ORDER BY updated_at DESC, id DESC
-            """
+            LIMIT ? OFFSET ?
+            """,
+            (limit + 1, offset),
         ).fetchall()
 
-        conversations: list[Conversation] = []
-        for row in rows:
-            conversations.append(to_conversation(row))
+        return PageResult(
+            items=[to_conversation(row) for row in rows[:limit]],
+            has_more=len(rows) > limit,
+        )
 
-        return conversations
 
-
-    def list_published(self) -> list[Conversation]:
+    def list_published(
+        self,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> PageResult[Conversation]:
         """查询所有已发布的对话"""
+
+        if limit is None:
+            rows = self.connection.execute(
+                """
+                SELECT *
+                FROM conversations
+                WHERE is_published = 1
+                ORDER BY updated_at DESC, id DESC
+                """
+            ).fetchall()
+            return PageResult(items=[to_conversation(row) for row in rows])
 
         rows = self.connection.execute(
             """
@@ -122,14 +157,15 @@ class ConversationRepository:
             FROM conversations
             WHERE is_published = 1
             ORDER BY updated_at DESC, id DESC
-            """
+            LIMIT ? OFFSET ?
+            """,
+            (limit + 1, offset),
         ).fetchall()
 
-        conversations: list[Conversation] = []
-        for row in rows:
-            conversations.append(to_conversation(row))
-
-        return conversations
+        return PageResult(
+            items=[to_conversation(row) for row in rows[:limit]],
+            has_more=len(rows) > limit,
+        )
 
 
 @dataclass

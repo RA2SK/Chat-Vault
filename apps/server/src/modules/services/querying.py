@@ -13,6 +13,7 @@ from core.models import (
     Conversation,
     Message,
 )
+from core.pagination import Page, PageResult
 from modules.interfaces.querying_intf import ConversationDetail
 from modules.repositories import (
     AttachmentRepository,
@@ -33,16 +34,22 @@ class QueryService:
     message_repository: MessageRepository
     attachment_repository: AttachmentRepository
 
-    def list_conversations(self) -> list[Conversation]:
-        """返回所有对话，供管理员或本地输出端使用"""
+    def list_conversations(self, page: Page) -> PageResult[Conversation]:
+        """返回一页对话，供管理员或本地输出端使用"""
 
-        return self.conversation_repository.list_all()
+        return self.conversation_repository.list_all(
+            limit=page.limit,
+            offset=page.offset,
+        )
 
 
-    def list_published_conversations(self) -> list[Conversation]:
-        """返回已发布的对话，供普通用户或公开输出端使用"""
+    def list_published_conversations(self, page: Page) -> PageResult[Conversation]:
+        """返回一页已发布的对话，供普通用户或公开输出端使用"""
 
-        return self.conversation_repository.list_published()
+        return self.conversation_repository.list_published(
+            limit=page.limit,
+            offset=page.offset,
+        )
 
 
     def get_conversation(self, conversation_source_id: str) -> Conversation | None:
@@ -55,23 +62,37 @@ class QueryService:
         self,
         conversation_source_id: str,
     ) -> ConversationDetail | None:
-        """获取对话、分支、消息和附件组成的完整详情"""
+        """获取对话、分支、消息和附件组成的完整详情
+
+        刻意用两次批量查询而不是逐分支逐消息查询: 逐个查询会让一个有 3 个
+        分支、2000 条消息的对话产生 2004 次查询, 每次都要走一遍加锁和结果
+        物化. 批量之后固定为 1 + 1 + 1 次, 与对话规模无关.
+        """
 
         conversation = self.get_conversation(conversation_source_id)
         if conversation is None:
             return None
 
         branches = self.list_branches(conversation_source_id)
-        messages: dict[str, list[Message]] = {}
-        attachments: dict[str, list[Attachment]] = {}
+        branch_source_ids = [branch.source_id for branch in branches]
+
+        messages = self.message_repository.list_by_branches(branch_source_ids)
+        message_source_ids = [
+            message.source_id
+            for branch_messages in messages.values()
+            for message in branch_messages
+        ]
+        attachments = self.attachment_repository.list_by_messages(
+            message_source_ids,
+        )
 
         for branch in branches:
-            branch_messages = self.list_messages(branch.source_id)
+            branch_messages = messages.get(branch.source_id, [])
             messages[branch.source_id] = branch_messages
             branch.messages = branch_messages
 
             for message in branch_messages:
-                message_attachments = self.list_attachments(message.source_id)
+                message_attachments = attachments.get(message.source_id, [])
                 attachments[message.source_id] = message_attachments
                 message.attachments = message_attachments
 
@@ -90,16 +111,33 @@ class QueryService:
         return self.branch_repository.list_by_conversation(conversation_source_id)
 
 
-    def list_messages(self, branch_source_id: str) -> list[Message]:
-        """获取某个分支下按 position 排序的消息"""
+    def list_messages(
+        self,
+        branch_source_id: str,
+        page: Page,
+    ) -> PageResult[Message]:
+        """获取某个分支下按 position 排序的一页消息"""
 
-        return self.message_repository.list_by_branch(branch_source_id)
+        return self.message_repository.list_by_branch(
+            branch_source_id,
+            limit=page.limit,
+            offset=page.offset,
+        )
 
 
     def list_attachments(self, message_source_id: str) -> list[Attachment]:
         """获取某条消息下的附件列表"""
 
         return self.attachment_repository.list_by_message(message_source_id)
+
+
+    def list_attachments_for_messages(
+        self,
+        message_source_ids: list[str],
+    ) -> dict[str, list[Attachment]]:
+        """一次获取多条消息下的附件, 按消息来源 ID 分组返回"""
+
+        return self.attachment_repository.list_by_messages(message_source_ids)
 
 
     def get_message(self, message_source_id: str) -> Message | None:

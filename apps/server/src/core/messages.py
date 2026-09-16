@@ -100,6 +100,9 @@ class MessageKey(str, Enum):
     DATABASE_CONNECTION_FAILED = "database_connection_failed"
     DATABASE_INITIALIZATION_FAILED = "database_initialization_failed"
 
+    # === 请求参数校验 ===
+    REQUEST_INVALID = "request_invalid"
+
 
 TEXTS: dict[MessageKey, str] = {
     MessageKey.ADMIN_REQUIRED: "需要管理员权限",
@@ -182,6 +185,8 @@ TEXTS: dict[MessageKey, str] = {
 
     MessageKey.DATABASE_CONNECTION_FAILED: "无法建立数据库连接: {reason}",
     MessageKey.DATABASE_INITIALIZATION_FAILED: "数据库初始化失败: {reason}",
+
+    MessageKey.REQUEST_INVALID: "请求参数不合法: {detail}",
 }
 
 

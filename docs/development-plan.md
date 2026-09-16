@@ -1,6 +1,25 @@
-﻿# 项目开发台账
+# 项目开发台账
 
 ## 一、更新日志
+
+### 2026-09-22（偏移分页、详情查询去 N+1 与请求校验错误形状统一）
+
+本轮解决的是"数据量一上来就会变慢"和"错误响应有两种形状"这两类问题。
+
+- **引入偏移分页（新增 `core/pagination.py`、`modules/services/pagination.py`）**。此前只有对话列表接口是真正无界的：`SELECT * FROM conversations ORDER BY updated_at DESC, id DESC` 没有 `WHERE`，也没有 `updated_at` 上的索引，SQLite 必须全表扫描再全表排序。其余七个列表方法都被父实体限定了范围，因此本轮只给对话列表、评论列表和消息列表接上分页。
+  - `core/pagination.py` 定义 `Page(limit, offset)` 和 `PageResult[T](items, has_more)`。`Page` 刻意没有"limit 为 None 表示不分页"的语义，否则无界查询会从某个调用点悄悄溜回架构里；`PageResult` 刻意不带 `total`，因为总数需要额外一次全表扫描，而归档场景下总数不是决策依据，`has_more` 靠多取一行就能得到，将来要加 `total` 也是纯增量改动。
+  - `modules/services/pagination.py` 定义 `DEFAULT_PAGE_SIZE = 50`、`MAX_PAGE_SIZE = 200` 和 `normalize_page()`。窗口大小是业务规则而不是传输细节，因此策略放在服务层；`normalize_page()` 是外部整数变成合法窗口的唯一入口，`limit` 收敛到 `[1, 200]`，`offset` 收敛到非负。
+  - **选择偏移分页而不是游标分页**：这是个人归档工具，不是高并发服务，几千行规模下 `OFFSET` 的线性成本可以忽略，而游标分页要求排序键稳定且需要前端保存游标，复杂度换不来收益。唯一的弱点是 `updated_at` 会在发布/取消发布时变化，翻页过程中恰好发生发布可能导致某一行重复或跳过；对单用户、低频手动发布的场景可以接受。**升级路径**：对话数达到十万级或出现多用户并发时，把对话列表改为以 `(updated_at, id)` 为游标的游标分页，`id` 是必需的，因为批量导入会让多行落在同一秒。
+  - **索引与 `LIMIT` 必须同时上线**：只有 `LIMIT` 而没有索引，SQLite 仍然全表扫描再全表排序，`LIMIT` 只是丢掉多余的行，成本一点没降；只有索引而没有 `LIMIT`，索引白建。因此 `schema.sql` 新增 `idx_conversations_updated_at ON conversations(updated_at DESC, id DESC)`，并附注释说明它与"`created_at` 不建索引"的决定不冲突：`created_at` 只用于展示，而 `updated_at` 是列表的排序键。
+  - **分页必须在 SQL 里做**：`_MaterializedCursor` 在 `execute()` 内部就调用了 `cursor.fetchall()`，整个结果集在调用方拿到游标之前已经物化成 Python 列表，因此 `fetchmany(20)` 省不下任何东西。
+- **消除对话详情查询的 N+1（`modules/services/querying.py`）**。原实现先逐个分支查消息、再逐条消息查附件，查询次数是 `1 + 分支数 + 消息数`；一个三分支、两千条消息的对话要发 2004 次查询，每次都要抢连接锁并物化一个游标。现在改为 `MessageRepository.list_by_branches()` 和 `AttachmentRepository.list_by_messages()` 各一次批量查询，查询次数固定为 4 次，与对话规模无关。批量方法按 500 个 ID 分块（`_MAX_SQL_VARIABLES`），因为 SQLite 的变量上限在旧版本是 999，500 对两个版本都安全，同时让 SQL 文本长度可控。实测三分支 120 条消息的对话从 124 次查询降到 4 次。
+- **评论聚合查询改为 SQL 侧合并（`modules/repositories/comments.py`）**。原实现刻意跑两条查询再在 Python 里合并排序，因为用 `OR` 把两个条件写进一条查询会让 `idx_comments_conversation` 和 `idx_comments_message` 双双失效。但 Python 侧合并意味着必须先取回全部评论才能切出第 N 页，分页就无从谈起。现在保留两个分支，用 `SELECT * FROM ( ... UNION ALL ... ) ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?` 把合并与排序交给 SQLite，两个分支仍然各自走索引。`ORDER BY` 里的 `id` 是必需的，时间戳相同时它保证顺序稳定。
+- **新增消息分页接口 `GET /api/conversations/{id}/messages`**。详情接口仍然返回当前链的全部消息，本接口是给"消息很多、需要逐页加载"的场景用的补充入口。不传 `branch_source_id` 时使用当前链；分支不属于该对话时返回 404，与"对话不存在""对话未发布"保持同一个状态码，避免通过状态码差异探测出未发布对话的分支结构。返回空列表会让调用方以为"这个分支没有消息"，而实际原因是分支根本不属于这个对话，因此这里选择 404 而不是空页。
+- **列表响应改为信封结构（`api/schemas.py` 新增 `PageResponse[T]`）**。裸数组没有地方放 `has_more`，前端只能靠"返回条数是否等于 limit"猜测还有没有下一页，而最后一页刚好填满时这个判据是错的。也没有采用 `X-Total-Count` 响应头：它受 CORS 暴露规则限制，且无法进入 OpenAPI 的类型描述。
+- **统一请求参数校验失败的错误形状（`api/exception_handlers.py`）**。此前 FastAPI 自带的校验失败返回 `{"detail": [...]}`，而业务异常返回 `{"error": {"key": ..., "message": ...}}`，前端只按一种形状解析就会在参数写错时拿到解析不了的结构。现在注册 `RequestValidationError` 处理器把它翻译成同一种形状，新增 `MessageKey.REQUEST_INVALID`。校验细节会拼进文案：这些信息描述的是调用方自己发来的参数，不涉及内部结构。
+- **上限只写在一处**。查询参数只校验"必须是正整数"，不校验上限，上限由 `normalize_page()` 收敛。原因是"要得太多"是意图而不是错误，前端传一个很大的 `limit` 想表达的是"尽量多给"，直接拒绝会让它拿到一个无法自行修正的错误；两处都写上限还会出现"查询参数拒绝、服务层收敛"两套策略打架的情况。
+- **命令行入口显式循环取完分页结果（`cli.py`）**。契约层没有"不分页"这条路径，这是刻意的；命令行确实需要看全部数据，但那是操作者在自己终端上的明确意图，因此由 `_collect_all()` 按 `offset` 递增循环取完，而不是让契约开一个后门。循环不假设"返回条数少于 limit 就是最后一页"，因为最后一页刚好填满时那个判据是错的。
+- 全量测试 171 项通过（新增 13 项分页与消息接口用例）；`ruff` 无新增问题（剩余 12 项 `E501` 为既有问题）；`pyright` 在 `basic` 模式下 0 错误。另用临时脚本验证了详情查询的查询次数（124 → 4）、分页边界（首页、末页、越界页）以及两条关键查询的执行计划确实走了索引，验证后已删除脚本。
 
 ### 2026-09-21（凭据校验、事务内赋值与遗留问题标注）
 
@@ -172,6 +191,7 @@
 
 - `apps/server/src/core/enums.py`：完成角色、来源、附件类型、评论目标、标记类型和导入状态等跨模块共享的枚举取值。
 - `apps/server/src/core/types.py`：完成业务标识符 NewType、`source_ref` 约定、校验值结构和应用侧 `new_id()`。
+- `apps/server/src/core/pagination.py`：完成分页窗口 `Page` 与分页结果 `PageResult` 的定义，供仓储层、服务层和接口层共用。
 - `apps/server/src/core/models/__init__.py`：完成核心模型的统一导出，调用方继续使用 `core.models` 这一稳定路径。
 - `apps/server/src/core/models/content.py`：完成对话、分支、消息和附件的内容图定义，以 `source_id` 作为身份，附件归属消息。
 - `apps/server/src/core/models/interaction.py`：完成评论、管理员标记和消息编辑历史模型。
@@ -194,16 +214,17 @@
 - `apps/server/src/api/exception_handlers.py`：完成业务异常到 HTTP 状态码的映射与统一错误响应体。
 - `apps/server/src/api/schemas.py`：完成请求与响应模型，响应模型逐字段声明，不直接序列化领域模型。
 - `apps/server/src/api/dependencies.py`：完成依赖装配，`get_current_user()` 是当前阶段唯一的身份来源。
-- `apps/server/src/api/routes.py`：完成 13 个端点，公开读取一律走发布服务，不碰查询服务。
+- `apps/server/src/api/routes.py`：完成 14 个端点，公开读取一律走发布服务，不碰查询服务。
 - `apps/server/src/bootstrap.py`：完成数据库连接、8 个仓储和两个业务服务的依赖组装。服务级事务边界已在各服务内声明，跨服务的事务编排和更完整的生命周期管理尚未实现。
 
 ### 已部分完成
 
 - `apps/server/src/modules/services/importing.py`：已完成适配器调用、解析结果处理、基础校验、幂等保存（含按文件内容摘要的重复导入检测）、`source_archive` 归档信息和导入批次统计；每个导入操作的事务边界已落地，更复杂的错误恢复和更多边界规则尚未实现。
-- `apps/server/src/modules/services/querying.py`：已完成对话列表、已发布对话列表、对话详情以及分支、消息和附件的基础查询；复杂搜索、筛选、排序和分页尚未实现。
+- `apps/server/src/modules/services/querying.py`：已完成对话列表、已发布对话列表、对话详情以及分支、消息和附件的基础查询，列表查询已接入偏移分页，详情查询已消除 N+1；复杂搜索和筛选尚未实现。
 - `apps/server/src/modules/services/users.py`：已完成权限判断、普通用户注册、管理员注册、`has_admin` 检查、认证与改密；用户信息维护和会话管理尚未实现。对外返回值已统一收窄为 `UserView`，需要读取 `password_hash` 的认证与改密流程改为在实现内部取回领域模型，密码散列不再穿过契约边界。
 - `apps/server/src/modules/services/publishing.py`：已完成发布权限判断、发布状态切换，以及展示视图的产出：`list_for_view` 返回 `PublishedConversationSummary`，`get_conversation_for_view` 返回 `PublishedConversationView`，两者均已剥离思考内容、备份组织方式、导入批次和编辑者等内部字段；展示按当前链展开，不合并历史分支。未发布对话对非管理员统一返回 `None`。
 - `apps/server/src/modules/services/moderation.py`：只有预先准备好的最小管理权限判断；管理员编辑、标记和维护流程尚未实现。
+- `apps/server/src/modules/services/pagination.py`：完成分页窗口策略 `normalize_page()` 与默认、上限两个常量，是外部整数变成合法窗口的唯一入口。
 - `apps/server/src/modules/services/comments.py`：已完成评论的创建、按对话查询、按消息查询、对话级聚合查询和软删除；评论编辑按设计不提供，修改意见只能删除后重发。
 - `apps/server/src/core/__init__.py`：仅完成领域模型的公共导出。`ConversationDetail` 是查询调用的结果形状，已归于接口层；服务实现和容器不再从本包惰性再导出，需要时直接从各自模块导入。
 - `apps/server/src/modules/interfaces/`：契约层已完整建立。`repositories_intf.py`、`importing_intf.py`、`querying_intf.py`、`publishing_intf.py`、`moderation_intf.py`、`comments_intf.py`、`users_intf.py`、`exporting_intf.py` 与 `__init__.py` 均已写入契约；各契约的输入输出形状均已与实际实现一致，`PublicationServiceContract` 声明 `PublishedConversationView`，`UserServiceContract` 声明 `UserView`；`exporting_intf.py` 只声明了形状，没有任何实现。
@@ -232,7 +253,7 @@
   - 批次状态已收敛为 `success` / `failed` 两档：单条解析失败只记入 `failed_count` 与 `error_summary`，不中止整次导入，也不改变批次状态；"部分成功"这一档已明确取消，不再作为待定项。
 
 - `apps/server/src/modules/services/querying.py`
-  - 复杂搜索、筛选、排序和分页尚未实现。
+  - 复杂搜索和筛选尚未实现，详见"待更新功能"。
 
 - `apps/server/src/modules/services/users.py`
   - 真正的认证系统、会话管理和持久化权限体系尚未实现。当前 `api/dependencies.py` 从请求头取用户名作为身份来源，这是程序只在本地运行阶段的临时方案，接入真正的认证时只需替换 `get_current_user()` 的函数体。
@@ -260,7 +281,63 @@
 
 ### 不属于单个文件的更新内容
 
-- 完成 Web API 与前端之间的数据接口：服务端 13 个端点已落地，前端尚未接入。
+- 完成 Web API 与前端之间的数据接口：服务端 14 个端点已落地，前端尚未接入。
 - 完成前端对话展示、Markdown 模拟渲染、评论回传和未来下载功能。
 - 适配器、导入服务、存储层和输出层尚未接入统一日志接口：`utils/logging.py` 已提供格式化与脱敏能力，但各层目前仍只有极少量日志调用点，需要随业务补齐。
 - 仓储层已对外统一以 `source_id` 标识内容对象，数据库主键不再离开持久化层；后续新增查询接口时需要继续保持这一约定。
+
+## 四、待更新功能
+
+以下功能已确认要做，但尚未开工。列在这里是为了让"还没做"成为台账里的事实，而不是只存在于讨论中。每项都写明为什么现在不做、以及开工时需要先解决什么。
+
+### 搜索与筛选
+
+- **现状**：`QueryingServiceContract` 只有"列出全部"和"按来源 ID 取单个"两类方法，没有任何按条件过滤的入口。对话列表接口因此只能整表分页，前端无法按标题、来源类型、发布时间或发布状态缩小范围。
+- **为什么现在不做**：搜索的形态取决于前端交互（是即时过滤还是提交式查询），而前端尚未开工；先定接口形状容易定错。
+- **开工时需要先解决**：
+  - 过滤条件放在服务层还是仓储层。倾向仓储层接收结构化条件对象、服务层负责把外部参数翻译成条件对象，与分页的分工保持一致。
+  - 标题搜索用 `LIKE` 还是 SQLite 的 FTS5 虚拟表。`LIKE '%关键词%'` 无法走索引，几千行规模够用；一旦需要按相关性排序或支持中文分词，就必须上 FTS5，届时 `conversations` 表需要配套的虚拟表和同步触发器。
+  - 筛选条件与分页的组合方式：条件必须进入 `WHERE` 而不是在取回结果后再过滤，否则分页的页大小会失真。
+  - 新增的过滤条件是否需要索引。`source_type` 和 `is_published` 目前都没有索引，如果它们成为常用筛选条件就需要补上。
+
+### 消息编辑
+
+- **现状**：`MessageRevision` 模型已定义但未持久化，`messages` 表有 `edited_at` 和 `edited_by` 两列但没有任何写入路径。消息内容目前只能通过重复导入覆盖。
+- **为什么现在不做**：编辑涉及"原始备份内容是否允许被改写"这个产品决策。归档工具的核心承诺是忠实保存，允许编辑就必须同时保留原始版本，否则归档的可信度就没了。
+- **开工时需要先解决**：
+  - `MessageRevision` 的持久化表结构，以及"编辑时先写修订再改正文"还是"只写修订、正文由修订推导"。
+  - 编辑权限：目前只有管理员标记和评论有权限校验，消息编辑需要明确是仅管理员还是对话所有者也可编辑。
+  - 时间戳归属：`edited_at` 由编辑操作写入，而 `updated_at` 由导入层控制，两者不能混用，否则重复导入的幂等判断会被编辑操作干扰。
+  - 展示层是否暴露编辑历史。`PublishedMessageView` 目前不含任何编辑相关字段。
+
+### 导出
+
+- **现状**：`modules/interfaces/exporting_intf.py` 只声明了形状，没有任何实现；`utils/hashing.py` 已建立但校验和计算尚未开始。
+- **为什么现在不做**：导出需要先确定输出格式（是还原成 Chatbox 备份、还是导出为 Markdown 或 JSON），而格式取决于使用场景，目前还没有明确的使用场景。
+- **开工时需要先解决**：
+  - 输出格式与目标适配器的对应关系。如果目标是"能被 Chatbox 重新导入"，就需要一个与 `chatbox_v2.py` 对称的写出适配器。
+  - 导出范围：单个对话、按条件筛选的一批对话、还是整库。
+  - 附件如何处理：内联进压缩包、还是只导出引用路径。这直接决定导出文件的大小和可移植性。
+  - 导出是否需要落盘到服务器，还是直接作为 HTTP 响应流式返回。后者需要 `StreamingResponse`，且不受当前"导入端点接收服务器本地路径"这一设计的影响。
+
+### 附件文件抽取
+
+- **现状**：`chatbox_v2.py` 只解析图片附件，文件附件尚未识别；`Attachment.source_ref` 记录的是备份包内的相对路径，但没有任何代码把实际文件从备份包里取出来。
+- **为什么现在不做**：当前阶段只需要展示附件元数据，不需要文件本体；抽取文件会引入存储布局、去重和清理策略等一整套问题。
+- **开工时需要先解决**：
+  - 抽取出来的文件放在哪里。需要与 `data/` 的目录约定一起设计，并考虑按校验和去重（`Attachment.checksum` 字段已经预留）。
+  - 路径安全：`chatbox_v2.py` 目前只对 `source_ref` 做了绝对路径和 `..` 的拦截，抽取文件时必须复用同一套校验，否则备份包里的恶意路径可以写到任意位置。
+  - 文件附件的类型识别与 `AttachmentType` 的对应关系。
+  - 清理策略：对话被重复导入覆盖时，旧附件文件是否需要删除。
+
+### 日志落盘
+
+- **现状**：`utils/logging.py` 提供文本和 JSON 两种格式化器以及敏感字段脱敏，但只输出到标准错误，没有任何落盘能力；各层的日志调用点也很少。
+- **为什么现在不做**：当前程序只在本地运行，标准错误直接可见，落盘没有收益；而且日志文件的位置、轮转和保留策略需要与部署形态一起确定。
+- **开工时需要先解决**：
+  - 落盘位置与 `data/` 目录约定的关系，以及日志文件是否应该被 `.gitignore` 覆盖。
+  - 轮转策略：按大小还是按时间，保留几份。`logging.handlers.RotatingFileHandler` 和 `TimedRotatingFileHandler` 都能直接用，但多进程写入需要额外处理。
+  - 是否同时保留标准错误输出。开发时需要终端可见，部署时可能只需要文件。
+  - 脱敏规则目前基于字段名匹配（`password`、`token` 等），落盘后日志会被长期保存，需要复核这套规则是否覆盖了所有敏感字段。
+  - 各层补齐日志调用点：适配器、导入服务、存储层和输出层目前几乎没有日志，落盘之前先把该记的东西记上，否则落盘只会得到一个几乎为空的文件。
+

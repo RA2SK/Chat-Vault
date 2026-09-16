@@ -5,16 +5,29 @@ Attachment 以 (message_source_id, source_ref) 作为身份, 不额外引入代�
 
 import sqlite3
 from dataclasses import dataclass
+from typing import Iterator
 
 from core.exceptions import NotFoundError
 from core.messages import MessageKey
 from core.models import Attachment, Message
+from core.pagination import PageResult
 from modules.repositories.mappings import (
     to_attachment,
     to_db_checksum,
     to_db_datetime,
     to_message,
 )
+
+# SQLite 的 SQLITE_MAX_VARIABLE_NUMBER 在 3.32 之后默认是 32766, 但旧版本是 999.
+# 取 500 是一个远低于任何版本上限的值, 同时保证单条 SQL 的文本长度可控.
+_MAX_SQL_VARIABLES = 500
+
+
+def _chunked(values: list[str], size: int) -> Iterator[list[str]]:
+    """把列表切成固定大小的批次, 供 IN (...) 查询使用"""
+
+    for start in range(0, len(values), size):
+        yield values[start:start + size]
 
 
 @dataclass
@@ -109,8 +122,30 @@ class MessageRepository:
         return row[0]
 
 
-    def list_by_branch(self, branch_source_id: str) -> list[Message]:
-        """按 position 顺序查询某个分支下的消息"""
+    def list_by_branch(
+        self,
+        branch_source_id: str,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> PageResult[Message]:
+        """按 position 顺序查询某个分支下的消息
+
+        limit 为 None 表示不分页, 供详情查询和内部调用方取全量
+        """
+
+        if limit is None:
+            rows = self.connection.execute(
+                """
+                SELECT *
+                FROM messages
+                WHERE branch_id = (
+                    SELECT id FROM branches WHERE source_id = ?
+                )
+                ORDER BY position ASC, id ASC
+                """,
+                (branch_source_id,),
+            ).fetchall()
+            return PageResult(items=[to_message(row) for row in rows])
 
         rows = self.connection.execute(
             """
@@ -120,15 +155,51 @@ class MessageRepository:
                 SELECT id FROM branches WHERE source_id = ?
             )
             ORDER BY position ASC, id ASC
+            LIMIT ? OFFSET ?
             """,
-            (branch_source_id,),
+            (branch_source_id, limit + 1, offset),
         ).fetchall()
 
-        messages: list[Message] = []
-        for row in rows:
-            messages.append(to_message(row))
+        return PageResult(
+            items=[to_message(row) for row in rows[:limit]],
+            has_more=len(rows) > limit,
+        )
 
-        return messages
+
+    def list_by_branches(
+        self,
+        branch_source_ids: list[str],
+    ) -> dict[str, list[Message]]:
+        """一次查询多个分支下的消息, 按分支来源 ID 分组返回
+
+        存在的意义是消除详情查询的 N+1: 逐个分支调用 list_by_branch 会让
+        一个有 3 个分支的对话产生 3 次查询, 而这里只需要 1 次.
+
+        参数个数超过 SQLite 的变量上限时按批切分, 因此调用方不需要关心
+        分支数量. 返回的字典只包含有消息的分支, 调用方用 get 取默认空列表.
+        """
+
+        grouped: dict[str, list[Message]] = {}
+
+        for chunk in _chunked(branch_source_ids, _MAX_SQL_VARIABLES):
+            placeholders = ", ".join("?" for _ in chunk)
+            rows = self.connection.execute(
+                f"""
+                SELECT messages.*, branches.source_id AS branch_source_id
+                FROM messages
+                JOIN branches ON branches.id = messages.branch_id
+                WHERE branches.source_id IN ({placeholders})
+                ORDER BY messages.position ASC, messages.id ASC
+                """,
+                tuple(chunk),
+            ).fetchall()
+
+            for row in rows:
+                grouped.setdefault(row["branch_source_id"], []).append(
+                    to_message(row),
+                )
+
+        return grouped
 
 
     def update(self, message: Message) -> None:
@@ -239,6 +310,39 @@ class AttachmentRepository:
             attachments.append(to_attachment(row))
 
         return attachments
+
+
+    def list_by_messages(
+        self,
+        message_source_ids: list[str],
+    ) -> dict[str, list[Attachment]]:
+        """一次查询多条消息下的附件, 按消息来源 ID 分组返回
+
+        与 MessageRepository.list_by_branches 同理: 逐个消息调用
+        list_by_message 会让一个有 2000 条消息的对话产生 2000 次查询,
+        而这里只需要 1 次.
+        """
+
+        grouped: dict[str, list[Attachment]] = {}
+
+        for chunk in _chunked(message_source_ids, _MAX_SQL_VARIABLES):
+            placeholders = ", ".join("?" for _ in chunk)
+            rows = self.connection.execute(
+                f"""
+                SELECT *
+                FROM attachments
+                WHERE message_source_id IN ({placeholders})
+                ORDER BY rowid ASC
+                """,
+                tuple(chunk),
+            ).fetchall()
+
+            for row in rows:
+                grouped.setdefault(row["message_source_id"], []).append(
+                    to_attachment(row),
+                )
+
+        return grouped
 
 
     def update(self, attachment: Attachment) -> None:

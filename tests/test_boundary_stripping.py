@@ -18,6 +18,7 @@ import pytest
 from bootstrap import ServiceContainer
 from core.enums import AttachmentType, MessageRole
 from core.models import Attachment, Branch, Conversation, Message
+from core.pagination import Page
 from modules.interfaces.publishing_intf import (
     PublishedConversationSummary,
     PublishedConversationView,
@@ -29,6 +30,7 @@ from modules.repositories import (
     ConversationRepository,
     MessageRepository,
 )
+from modules.services.pagination import MAX_PAGE_SIZE
 
 CONVERSATION = "conv-1"
 MAIN_BRANCH = "conv-1::main"
@@ -202,7 +204,10 @@ def test_list_for_view_returns_summaries_without_internal_fields(
     _seed_conversation(container)
     admin = container.user_service.register_admin("root", "pw-root")
 
-    summaries = container.publishing_service.list_for_view(admin)
+    summaries = container.publishing_service.list_for_view(
+        admin,
+        Page(limit=MAX_PAGE_SIZE),
+    ).items
 
     assert len(summaries) == 1
     summary = summaries[0]
@@ -269,7 +274,13 @@ def test_unpublished_conversation_is_invisible_to_plain_user(
         container.publishing_service.get_conversation_for_view(plain, "conv-missing")
         is None
     )
-    assert container.publishing_service.list_for_view(plain) == []
+    assert (
+        container.publishing_service.list_for_view(
+            plain,
+            Page(limit=MAX_PAGE_SIZE),
+        ).items
+        == []
+    )
 
 
 def test_published_conversation_is_visible_to_plain_user(
@@ -281,6 +292,12 @@ def test_published_conversation_is_visible_to_plain_user(
     view = container.publishing_service.get_conversation_for_view(plain, CONVERSATION)
 
     assert view is not None
-    assert [summary.source_id for summary in container.publishing_service.list_for_view(plain)] == [
+    assert [
+        summary.source_id
+        for summary in container.publishing_service.list_for_view(
+            plain,
+            Page(limit=MAX_PAGE_SIZE),
+        ).items
+    ] == [
         CONVERSATION,
     ]

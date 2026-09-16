@@ -29,6 +29,7 @@ from modules.repositories import (
     ConversationRepository,
     MessageRepository,
 )
+from modules.services.pagination import MAX_PAGE_SIZE
 
 CONVERSATION_ID = "conv-1"
 BRANCH_ID = "conv-1::main"
@@ -124,6 +125,17 @@ def _plain_user(container: ServiceContainer) -> UserView:
     return container.user_service.register("alice", "pw-alice")
 
 
+def _items(response) -> list[dict]:
+    """取出分页响应里的条目
+
+    列表接口统一返回 ``{items, limit, offset, has_more}`` 信封而不是裸数组:
+    裸数组没有地方放 ``has_more``, 前端只能靠"返回条数是否等于 limit"猜测还有
+    没有下一页, 而最后一页刚好填满时这个判据是错的.
+    """
+
+    return response.json()["items"]
+
+
 # === 错误响应形状 ===
 
 
@@ -217,7 +229,7 @@ def test_unpublished_conversation_is_absent_from_list(
     response = client.get("/api/conversations")
 
     assert response.status_code == 200
-    assert response.json() == []
+    assert _items(response) == []
 
 
 def test_unpublished_conversation_is_indistinguishable_from_missing(
@@ -245,7 +257,7 @@ def test_admin_sees_unpublished_conversation(
     listed = client.get("/api/conversations")
     detail = client.get(f"/api/conversations/{CONVERSATION_ID}")
 
-    assert [item["source_id"] for item in listed.json()] == [CONVERSATION_ID]
+    assert [item["source_id"] for item in _items(listed)] == [CONVERSATION_ID]
     assert detail.status_code == 200
 
 
@@ -258,7 +270,7 @@ def test_published_conversation_is_visible_anonymously(
     listed = client.get("/api/conversations")
     detail = client.get(f"/api/conversations/{CONVERSATION_ID}")
 
-    assert [item["source_id"] for item in listed.json()] == [CONVERSATION_ID]
+    assert [item["source_id"] for item in _items(listed)] == [CONVERSATION_ID]
     assert detail.status_code == 200
 
 
@@ -271,7 +283,7 @@ def test_display_responses_strip_internal_fields(
 ) -> None:
     _seed_conversation(container, is_published=True)
 
-    summary = client.get("/api/conversations").json()[0]
+    summary = _items(client.get("/api/conversations"))[0]
     detail = client.get(f"/api/conversations/{CONVERSATION_ID}").json()
     message = detail["messages"][0]
 
@@ -376,7 +388,7 @@ def test_acting_user_header_resolves_real_user(
     )
 
     assert response.status_code == 200
-    assert [item["source_id"] for item in response.json()] == [CONVERSATION_ID]
+    assert [item["source_id"] for item in _items(response)] == [CONVERSATION_ID]
 
 
 # === 评论 ===
@@ -407,7 +419,7 @@ def test_comment_round_trip(
     assert "created_by" not in body
 
     listed = client.get(f"/api/conversations/{CONVERSATION_ID}/comments")
-    assert [item["id"] for item in listed.json()] == [body["id"]]
+    assert [item["id"] for item in _items(listed)] == [body["id"]]
 
 
 def test_conversation_comments_include_message_comments(
@@ -437,7 +449,7 @@ def test_conversation_comments_include_message_comments(
 
     listed = client.get(f"/api/conversations/{CONVERSATION_ID}/comments")
 
-    assert [item["content"] for item in listed.json()] == ["对话级", "消息级"]
+    assert [item["content"] for item in _items(listed)] == ["对话级", "消息级"]
 
 
 def test_comments_of_unpublished_conversation_are_not_readable(
@@ -484,7 +496,7 @@ def test_admin_can_delete_comment(
     listed = client.get(f"/api/conversations/{CONVERSATION_ID}/comments")
 
     assert removed.status_code == 204
-    assert listed.json() == []
+    assert _items(listed) == []
 
 
 # === 管理员标记 ===
@@ -673,3 +685,281 @@ def test_import_unrecognized_file_returns_422(
 
     assert response.status_code == 422
     assert response.json()["error"]["key"] == "import_format_mismatch"
+
+
+# === 分页 ===
+
+
+def _seed_many_conversations(
+    container: ServiceContainer,
+    count: int,
+    *,
+    is_published: bool = True,
+) -> list[str]:
+    """写入多个对话, 返回按列表顺序排列的来源 ID
+
+    列表按 ``updated_at DESC, id DESC`` 排序, 而这里写入的时间戳完全相同,
+    因此实际顺序由 id 决定. 断言时按 id 倒序排列, 与排序键保持一致.
+    """
+
+    conversation_repository = ConversationRepository(container.connection)
+
+    source_ids = [f"conv-{index:03d}" for index in range(count)]
+
+    for source_id in source_ids:
+        conversation_repository.create(
+            Conversation(
+                source_id=source_id,
+                title=f"对话 {source_id}",
+                source_archive="backup.zip",
+                is_published=is_published,
+            ),
+        )
+
+    return sorted(source_ids, reverse=True)
+
+
+def test_conversation_list_reports_has_more(
+    client: TestClient,
+    container: ServiceContainer,
+) -> None:
+    """一页装不下时 has_more 为真, 装得下时为假
+
+    这是信封存在的理由: 裸数组只能靠"返回条数是否等于 limit"猜测, 而最后一页
+    刚好填满时那个判据是错的.
+    """
+
+    _seed_many_conversations(container, 3)
+
+    first = client.get("/api/conversations", params={"limit": 2})
+
+    assert first.status_code == 200
+    body = first.json()
+    assert len(body["items"]) == 2
+    assert body["limit"] == 2
+    assert body["offset"] == 0
+    assert body["has_more"] is True
+
+    second = client.get("/api/conversations", params={"limit": 2, "offset": 2})
+
+    assert second.status_code == 200
+    body = second.json()
+    assert len(body["items"]) == 1
+    assert body["has_more"] is False
+
+
+def test_conversation_list_pages_do_not_overlap(
+    client: TestClient,
+    container: ServiceContainer,
+) -> None:
+    """逐页取完的结果与一次取完的结果一致, 且没有重复或遗漏"""
+
+    expected = _seed_many_conversations(container, 5)
+
+    collected: list[str] = []
+    offset = 0
+
+    while True:
+        response = client.get(
+            "/api/conversations",
+            params={"limit": 2, "offset": offset},
+        )
+        body = response.json()
+        collected.extend(item["source_id"] for item in body["items"])
+
+        if not body["has_more"]:
+            break
+
+        offset += len(body["items"])
+
+    assert collected == expected
+
+
+def test_offset_past_the_end_returns_empty_page(
+    client: TestClient,
+    container: ServiceContainer,
+) -> None:
+    """偏移超出总数时返回空页而不是报错
+
+    翻页过程中数据被删掉就会出现这种情况, 报错会让前端卡在错误状态上,
+    返回空页则让前端自然地停下来.
+    """
+
+    _seed_many_conversations(container, 2)
+
+    response = client.get("/api/conversations", params={"offset": 100})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"] == []
+    assert body["has_more"] is False
+
+
+def test_limit_above_maximum_is_clamped(
+    client: TestClient,
+    container: ServiceContainer,
+) -> None:
+    """超过上限的 limit 被收敛到上限, 而不是被拒绝
+
+    "要得太多"是意图而不是错误, 因此收敛; 而 limit 小于 1 是无效参数,
+    由查询参数校验直接拒绝.
+    """
+
+    _seed_many_conversations(container, 2)
+
+    response = client.get("/api/conversations", params={"limit": 100000})
+
+    assert response.status_code == 200
+    assert response.json()["limit"] == MAX_PAGE_SIZE
+
+
+def test_invalid_limit_is_rejected_with_error_envelope(
+    client: TestClient,
+) -> None:
+    """limit 小于 1 时返回与业务异常同形状的错误信封
+
+    FastAPI 自带的校验失败响应是 ``{"detail": [...]}``, 与业务异常的
+    ``{"error": {...}}`` 不同. 前端如果只按一种形状解析, 就会在参数写错时
+    拿到一个解析不了的结构, 因此这里把它翻译成同一种形状.
+    """
+
+    response = client.get("/api/conversations", params={"limit": 0})
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["key"] == "request_invalid"
+    assert "limit" in body["error"]["message"]
+
+
+def test_negative_offset_is_rejected(client: TestClient) -> None:
+    """负偏移是无效参数"""
+
+    response = client.get("/api/conversations", params={"offset": -1})
+
+    assert response.status_code == 422
+    assert response.json()["error"]["key"] == "request_invalid"
+
+
+def test_comment_list_is_paginated(
+    client: TestClient,
+    container: ServiceContainer,
+    app: FastAPI,
+) -> None:
+    """评论列表同样按页返回"""
+
+    _seed_conversation(container, is_published=True)
+    _act_as(app, _plain_user(container))
+
+    for index in range(3):
+        client.post(
+            "/api/comments",
+            json={
+                "target_type": CommentTarget.CONVERSATION.value,
+                "target_source_id": CONVERSATION_ID,
+                "content": f"评论 {index}",
+            },
+        )
+
+    first = client.get(
+        f"/api/conversations/{CONVERSATION_ID}/comments",
+        params={"limit": 2},
+    )
+
+    assert first.status_code == 200
+    body = first.json()
+    assert [item["content"] for item in body["items"]] == ["评论 0", "评论 1"]
+    assert body["has_more"] is True
+
+    second = client.get(
+        f"/api/conversations/{CONVERSATION_ID}/comments",
+        params={"limit": 2, "offset": 2},
+    )
+
+    assert [item["content"] for item in second.json()["items"]] == ["评论 2"]
+    assert second.json()["has_more"] is False
+
+
+# === 消息分页接口 ===
+
+
+def test_message_list_returns_current_branch_messages(
+    client: TestClient,
+    container: ServiceContainer,
+) -> None:
+    """不指定分支时返回当前链的消息"""
+
+    _seed_conversation(container, is_published=True)
+
+    response = client.get(f"/api/conversations/{CONVERSATION_ID}/messages")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["source_id"] for item in body["items"]] == [MESSAGE_ID]
+    assert body["has_more"] is False
+
+
+def test_message_list_accepts_explicit_branch(
+    client: TestClient,
+    container: ServiceContainer,
+) -> None:
+    """指定分支时返回该分支的消息"""
+
+    _seed_conversation(container, is_published=True)
+
+    response = client.get(
+        f"/api/conversations/{CONVERSATION_ID}/messages",
+        params={"branch_source_id": BRANCH_ID},
+    )
+
+    assert response.status_code == 200
+    assert [item["source_id"] for item in response.json()["items"]] == [MESSAGE_ID]
+
+
+def test_message_list_rejects_branch_of_another_conversation(
+    client: TestClient,
+    container: ServiceContainer,
+) -> None:
+    """分支不属于该对话时返回 404
+
+    返回空列表会让调用方以为"这个分支没有消息", 而实际原因是分支根本不属于
+    这个对话. 状态码与"对话不存在"保持一致, 避免借此探测未发布对话的分支结构.
+    """
+
+    _seed_conversation(container, is_published=True)
+
+    response = client.get(
+        f"/api/conversations/{CONVERSATION_ID}/messages",
+        params={"branch_source_id": "conv-other::main"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["key"] == "conversation_not_found"
+
+
+def test_message_list_of_unpublished_conversation_is_not_readable(
+    client: TestClient,
+    container: ServiceContainer,
+) -> None:
+    """未发布的对话对匿名调用方不可读"""
+
+    _seed_conversation(container, is_published=False)
+
+    response = client.get(f"/api/conversations/{CONVERSATION_ID}/messages")
+
+    assert response.status_code == 404
+
+
+def test_message_list_strips_internal_fields(
+    client: TestClient,
+    container: ServiceContainer,
+) -> None:
+    """消息分页响应同样不含思考内容等内部字段"""
+
+    _seed_conversation(container, is_published=True)
+
+    message = client.get(f"/api/conversations/{CONVERSATION_ID}/messages").json()[
+        "items"
+    ][0]
+
+    assert "thinking" not in message
+    assert message["content"] == "你好"

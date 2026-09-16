@@ -14,6 +14,7 @@ from typing import Protocol, runtime_checkable
 
 from core.enums import CommentTarget
 from core.models import Comment
+from core.pagination import Page, PageResult
 from core.types import CommentId
 from modules.interfaces.users_intf import UserView
 
@@ -72,8 +73,9 @@ class CommentServiceContract(Protocol):
     def list_by_conversation_including_messages(
         self,
         conversation_source_id: str,
-    ) -> list[Comment]:
-        """查询某个对话下的全部有效评论, 含该对话所属消息的评论
+        page: Page,
+    ) -> PageResult[Comment]:
+        """查询某个对话下的一页有效评论, 含该对话所属消息的评论
 
         对话评论与消息评论合并后按时间线排序, 已删除的评论不返回.
         这是"查看该对话下所有讨论"的整体视图, 不需要调用方逐个消息拼接.

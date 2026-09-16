@@ -30,7 +30,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Callable, Sequence
 
 from bootstrap import ServiceContainer
 from core.exceptions import (
@@ -44,7 +44,9 @@ from core.exceptions import (
     ValidationError,
 )
 from core.messages import MessageKey
+from core.pagination import Page, PageResult
 from modules.adapters import REGISTRY, detect_importer, resolve_importer
+from modules.services.pagination import MAX_PAGE_SIZE
 from utils.logging import configure_logging
 
 __all__ = ["main"]
@@ -159,13 +161,41 @@ def _run_import(container: ServiceContainer, args: argparse.Namespace) -> int:
     return 0
 
 
+def _collect_all(fetch_page: Callable[[Page], PageResult[Any]]) -> list[Any]:
+    """逐页取完一个分页接口的全部结果
+
+    接口契约里没有"不分页"这条路径, 这是刻意的: 一旦存在, 未加限制的查询就会
+    从某个调用点悄悄溜回架构里. 命令行确实需要看全部数据, 但那是操作者在自己
+    终端上的明确意图, 所以由这里显式循环取完, 而不是让契约开一个后门.
+
+    循环按 offset 递增, 直到某一页返回 has_more 为假. 这里不假设"返回条数少于
+    limit 就是最后一页", 因为最后一页刚好填满时那个判据是错的.
+    """
+
+    items: list[Any] = []
+    offset = 0
+
+    while True:
+        result = fetch_page(Page(limit=MAX_PAGE_SIZE, offset=offset))
+        items.extend(result.items)
+
+        if not result.has_more:
+            return items
+
+        offset += len(result.items)
+
+
 def _run_conversations(container: ServiceContainer, args: argparse.Namespace) -> int:
     """执行列出对话命令"""
 
     if args.published:
-        conversations = container.query_service.list_published_conversations()
+        conversations = _collect_all(
+            lambda page: container.query_service.list_published_conversations(page)
+        )
     else:
-        conversations = container.query_service.list_conversations()
+        conversations = _collect_all(
+            lambda page: container.query_service.list_conversations(page)
+        )
 
     if not conversations:
         print("没有符合条件的对话")
@@ -210,8 +240,10 @@ def _run_show(container: ServiceContainer, args: argparse.Namespace) -> int:
 def _run_comments(container: ServiceContainer, args: argparse.Namespace) -> int:
     """执行列出对话评论命令"""
 
-    comments = container.comment_service.list_by_conversation_including_messages(
-        args.source_id
+    comments = _collect_all(
+        lambda page: container.comment_service.list_by_conversation_including_messages(
+            args.source_id, page
+        )
     )
 
     if not comments:

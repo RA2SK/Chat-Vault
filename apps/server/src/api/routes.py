@@ -26,7 +26,7 @@
 
 from pathlib import Path
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Query, status
 
 from api.dependencies import (
     CommentServiceDep,
@@ -47,6 +47,8 @@ from api.schemas import (
     LoginRequest,
     MarkCreateRequest,
     MarkResponse,
+    MessageResponse,
+    PageResponse,
     PasswordChangeRequest,
     UserResponse,
 )
@@ -54,6 +56,7 @@ from core.exceptions import NotAuthenticatedError, NotFoundError
 from core.messages import MessageKey
 from core.types import AdminMarkId, CommentId
 from modules.adapters import detect_importer, resolve_importer
+from modules.services.pagination import normalize_page
 
 __all__ = ["router"]
 
@@ -65,24 +68,39 @@ router = APIRouter(prefix="/api")
 
 @router.get(
     "/conversations",
-    response_model=list[ConversationSummaryResponse],
+    response_model=PageResponse[ConversationSummaryResponse],
     tags=["conversations"],
-    summary="列出当前身份可查看的对话",
+    summary="分页列出当前身份可查看的对话",
 )
 def list_conversations(
     user: CurrentUserDep,
     publishing_service: PublicationServiceDep,
-) -> list[ConversationSummaryResponse]:
-    """列出当前身份可查看的对话
+    limit: int | None = Query(None, ge=1),
+    offset: int = Query(0, ge=0),
+) -> PageResponse[ConversationSummaryResponse]:
+    """分页列出当前身份可查看的对话
 
     管理员看到全部对话, 其他身份只看到已发布的对话. 筛选规则在服务层,
     本接口不重复实现.
+
+    这里只校验"必须是正整数", 不校验上限. 上限由服务层的 ``normalize_page``
+    收敛, 因为"要得太多"是意图而不是错误: 前端传一个很大的 limit 想表达的是
+    "尽量多给", 直接拒绝会让它拿到一个它无法自行修正的错误. 上限只写在一处,
+    也就不会出现"查询参数拒绝、服务层收敛"这种两套策略打架的情况.
     """
 
-    return [
-        ConversationSummaryResponse.from_view(summary)
-        for summary in publishing_service.list_for_view(user)
-    ]
+    page = normalize_page(limit, offset)
+    result = publishing_service.list_for_view(user, page)
+
+    return PageResponse[ConversationSummaryResponse](
+        items=[
+            ConversationSummaryResponse.from_view(summary)
+            for summary in result.items
+        ],
+        limit=page.limit,
+        offset=page.offset,
+        has_more=result.has_more,
+    )
 
 
 @router.get(
@@ -114,18 +132,65 @@ def get_conversation(
 
 
 @router.get(
+    "/conversations/{conversation_source_id}/messages",
+    response_model=PageResponse[MessageResponse],
+    tags=["conversations"],
+    summary="分页获取一个对话下某个分支的消息",
+)
+def list_conversation_messages(
+    conversation_source_id: str,
+    user: CurrentUserDep,
+    publishing_service: PublicationServiceDep,
+    branch_source_id: str | None = Query(None),
+    limit: int | None = Query(None, ge=1),
+    offset: int = Query(0, ge=0),
+) -> PageResponse[MessageResponse]:
+    """分页获取一个对话下某个分支的消息
+
+    不传 `branch_source_id` 时使用当前链. 详情接口 `GET /conversations/{id}`
+    仍然返回当前链的全部消息, 本接口是给"消息很多、需要逐页加载"的场景用的
+    补充入口, 而不是替代详情接口.
+
+    分支不属于该对话时返回 404, 与对话不存在、对话未发布保持同一个状态码,
+    避免通过状态码差异探测出未发布对话的分支结构.
+    """
+
+    page = normalize_page(limit, offset)
+    result = publishing_service.list_messages_for_view(
+        user,
+        conversation_source_id,
+        branch_source_id,
+        page,
+    )
+    if result is None:
+        raise NotFoundError(
+            MessageKey.CONVERSATION_NOT_FOUND,
+            conversation_source_id=conversation_source_id,
+        )
+
+    return PageResponse[MessageResponse](
+        items=[MessageResponse.from_view(message) for message in result.items],
+        limit=page.limit,
+        offset=page.offset,
+        has_more=result.has_more,
+    )
+
+
+@router.get(
     "/conversations/{conversation_source_id}/comments",
-    response_model=list[CommentResponse],
+    response_model=PageResponse[CommentResponse],
     tags=["comments"],
-    summary="查询一个对话下的全部评论",
+    summary="分页查询一个对话下的评论",
 )
 def list_conversation_comments(
     conversation_source_id: str,
     user: CurrentUserDep,
     publishing_service: PublicationServiceDep,
     comment_service: CommentServiceDep,
-) -> list[CommentResponse]:
-    """查询一个对话下的全部评论, 含该对话所属消息的评论
+    limit: int | None = Query(None, ge=1),
+    offset: int = Query(0, ge=0),
+) -> PageResponse[CommentResponse]:
+    """分页查询一个对话下的评论, 含该对话所属消息的评论
 
     使用合并查询而不是只查直接挂在对话下的评论: 前端要展示的是"这个对话下
     的所有讨论", 只返回对话级评论会让消息级评论在整体视图里消失.
@@ -141,12 +206,18 @@ def list_conversation_comments(
             conversation_source_id=conversation_source_id,
         )
 
-    return [
-        CommentResponse.from_model(comment)
-        for comment in comment_service.list_by_conversation_including_messages(
-            conversation_source_id,
-        )
-    ]
+    page = normalize_page(limit, offset)
+    result = comment_service.list_by_conversation_including_messages(
+        conversation_source_id,
+        page,
+    )
+
+    return PageResponse[CommentResponse](
+        items=[CommentResponse.from_model(comment) for comment in result.items],
+        limit=page.limit,
+        offset=page.offset,
+        has_more=result.has_more,
+    )
 
 
 # === 评论 ===

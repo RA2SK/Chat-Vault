@@ -17,6 +17,7 @@ HTTP 状态码和响应体, 因此 "哪个错误对应哪个状态码" 只有一
 import logging
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from core.exceptions import (
@@ -29,6 +30,7 @@ from core.exceptions import (
     PersistenceError,
     ValidationError,
 )
+from core.messages import MessageKey, render
 
 __all__ = ["register_exception_handlers"]
 
@@ -136,6 +138,44 @@ async def handle_unexpected_error(
     return _error_response(500, _INTERNAL_ERROR_MESSAGE, "internal_error")
 
 
+async def handle_request_validation_error(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    """把请求参数校验失败转换成统一形状的错误响应
+
+    FastAPI 自带的校验失败响应是 ``{"detail": [...]}``, 与业务异常的
+    ``{"error": {...}}`` 形状不同. 前端如果只按一种形状解析, 就会在参数写错
+    时拿到一个解析不了的结构, 因此这里把它翻译成同一种形状.
+
+    校验细节会被拼进文案: 这些信息描述的是调用方自己发来的参数, 不涉及内部
+    结构, 回传出去不会泄露什么, 反而能让调用方直接看出哪个参数写错了.
+    """
+
+    assert isinstance(exc, RequestValidationError)
+
+    detail = "; ".join(
+        f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+        for error in exc.errors()
+    )
+
+    logger.info(
+        "请求参数校验失败",
+        extra={
+            "method": request.method,
+            "path": request.url.path,
+            "status": 422,
+            "key": MessageKey.REQUEST_INVALID.value,
+        },
+    )
+
+    return _error_response(
+        422,
+        render(MessageKey.REQUEST_INVALID, detail=detail),
+        MessageKey.REQUEST_INVALID.value,
+    )
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """把异常处理器注册到应用
 
@@ -144,4 +184,5 @@ def register_exception_handlers(app: FastAPI) -> None:
     """
 
     app.add_exception_handler(ChatVaultError, handle_chat_vault_error)
+    app.add_exception_handler(RequestValidationError, handle_request_validation_error)
     app.add_exception_handler(Exception, handle_unexpected_error)

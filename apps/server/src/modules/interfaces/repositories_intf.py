@@ -29,6 +29,7 @@ from core.models import (
     Message,
     User,
 )
+from core.pagination import PageResult
 from core.types import AdminMarkId, CommentId, ImportBatchId, UserId
 
 
@@ -47,12 +48,23 @@ class ConversationStore(Protocol):
         """更新一个对话"""
         ...
 
-    def list_all(self) -> list[Conversation]:
-        """查询所有对话"""
+    def list_all(
+        self,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> PageResult[Conversation]:
+        """查询所有对话
+
+        limit 为 None 表示不分页, 供命令行和内部调用方取全量
+        """
         ...
 
-    def list_published(self) -> list[Conversation]:
-        """查询所有已发布的对话"""
+    def list_published(
+        self,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> PageResult[Conversation]:
+        """查询所有已发布的对话, limit 为 None 表示不分页"""
         ...
 
 
@@ -100,8 +112,26 @@ class MessageStore(Protocol):
         """查询某条消息所属对话的来源 ID, 用于跨内容域引用时确定归属"""
         ...
 
-    def list_by_branch(self, branch_source_id: str) -> list[Message]:
-        """查询某个分支下的消息, 按 position 升序"""
+    def list_by_branch(
+        self,
+        branch_source_id: str,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> PageResult[Message]:
+        """查询某个分支下的消息, 按 position 升序
+
+        limit 为 None 表示不分页
+        """
+        ...
+
+    def list_by_branches(
+        self,
+        branch_source_ids: list[str],
+    ) -> dict[str, list[Message]]:
+        """一次查询多个分支下的消息, 按分支来源 ID 分组返回
+
+        存在的意义是消除详情查询的 N+1, 调用方不需要关心分批
+        """
         ...
 
     def update(self, message: Message) -> None:
@@ -121,6 +151,16 @@ class AttachmentStore(Protocol):
 
     def list_by_message(self, message_source_id: str) -> list[Attachment]:
         """查询某条消息下的附件"""
+        ...
+
+    def list_by_messages(
+        self,
+        message_source_ids: list[str],
+    ) -> dict[str, list[Attachment]]:
+        """一次查询多条消息下的附件, 按消息来源 ID 分组返回
+
+        存在的意义是消除详情查询的 N+1, 调用方不需要关心分批
+        """
         ...
 
     def update(self, attachment: Attachment) -> None:

@@ -9,6 +9,7 @@ from core.exceptions import (
 )
 from core.messages import MessageKey
 from core.models import Comment, Conversation
+from core.pagination import Page, PageResult
 from core.types import CommentId
 from modules.interfaces.comments_intf import CommentSubmission
 from modules.interfaces.users_intf import UserView
@@ -133,7 +134,8 @@ class CommentService:
     def list_by_conversation_including_messages(
         self,
         conversation_source_id: str,
-    ) -> list[Comment]:
+        page: Page,
+    ) -> PageResult[Comment]:
         """查询某个对话下的全部有效评论, 含该对话所属消息的评论
 
         对话评论与消息评论合并后按时间线排序, 供"查看该对话下所有讨论"
@@ -142,6 +144,8 @@ class CommentService:
 
         return self.comment_repository.list_by_conversation_including_messages(
             conversation_source_id,
+            limit=page.limit,
+            offset=page.offset,
         )
 
 

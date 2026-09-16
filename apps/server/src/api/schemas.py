@@ -22,6 +22,7 @@
 """
 
 from datetime import datetime
+from typing import Generic, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -35,6 +36,8 @@ from modules.interfaces.publishing_intf import (
 )
 from modules.interfaces.users_intf import UserView
 
+T = TypeVar("T")
+
 __all__ = [
     "AdminRegisterRequest",
     "CommentCreateRequest",
@@ -47,9 +50,30 @@ __all__ = [
     "MarkCreateRequest",
     "MarkResponse",
     "MessageResponse",
+    "PageResponse",
     "PasswordChangeRequest",
     "UserResponse",
 ]
+
+
+# === 分页信封 ===
+
+
+class PageResponse(BaseModel, Generic[T]):
+    """分页响应信封
+
+    刻意用信封而不是裸数组: 裸数组里没有位置放 ``has_more``, 前端只能靠
+    "返回条数是否等于 limit" 来猜还有没有下一页, 而最后一页恰好装满时
+    这个猜测是错的.
+
+    也刻意不用 ``X-Total-Count`` 这类响应头: 响应头在浏览器里需要额外配置
+    CORS 暴露规则, 而且 OpenAPI 文档无法描述它, 前端拿不到类型信息.
+    """
+
+    items: list[T]
+    limit: int
+    offset: int
+    has_more: bool
 
 
 # === 请求模型 ===

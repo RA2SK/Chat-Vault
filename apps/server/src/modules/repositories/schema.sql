@@ -64,6 +64,13 @@ CREATE TABLE IF NOT EXISTS conversations (
 CREATE INDEX IF NOT EXISTS idx_conversations_import_batch
     ON conversations(import_batch_id);
 
+-- 对话列表按 updated_at DESC, id DESC 排序并分页. 没有这条索引时 SQLite 必须
+-- 全表扫描再全表排序, 此时 LIMIT 只是丢掉多余的行, 查询成本一点没降.
+-- 注意这条索引是为分页服务的, 与"created_at 不建索引"的决定不冲突:
+-- created_at 只用于展示, 而 updated_at 是列表的排序键.
+CREATE INDEX IF NOT EXISTS idx_conversations_updated_at
+    ON conversations(updated_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS branches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id INTEGER NOT NULL,

@@ -18,6 +18,7 @@ from typing import Protocol, runtime_checkable
 
 from core.enums import MessageRole
 from core.models import Conversation
+from core.pagination import Page, PageResult
 from modules.interfaces.users_intf import UserView
 
 
@@ -81,8 +82,9 @@ class PublicationServiceContract(Protocol):
     def list_for_view(
         self,
         user: UserView | None,
-    ) -> list[PublishedConversationSummary]:
-        """按用户权限返回可查看的对话列表
+        page: Page,
+    ) -> PageResult[PublishedConversationSummary]:
+        """按用户权限返回一页可查看的对话列表
 
         管理员看到全部对话, 其他用户只看到已发布的对话.
         返回值已剥离备份组织和导入批次字段
@@ -99,6 +101,24 @@ class PublicationServiceContract(Protocol):
         无权查看时返回 None, 对话不存在时也返回 None. 两种情况统一返回
         None, 是为了让调用方无法通过返回值区分"对话不存在"和"存在但未发布",
         否则未发布的对话标题会被枚举出来.
+        """
+        ...
+
+    def list_messages_for_view(
+        self,
+        user: UserView | None,
+        conversation_source_id: str,
+        branch_source_id: str | None,
+        page: Page,
+    ) -> PageResult[PublishedMessageView] | None:
+        """按用户权限分页获取一个对话下某个分支的消息
+
+        无权查看或对话不存在时返回 None, 与 `get_conversation_for_view` 的
+        约定一致, 调用方无法借此枚举未发布的对话.
+
+        `branch_source_id` 为 None 时使用当前链. 指定了分支但该分支不属于
+        这个对话时同样返回 None, 而不是返回空列表: 空列表会让调用方以为
+        "这个分支没有消息", 而实际原因是分支根本不属于这个对话.
         """
         ...
 

@@ -11,13 +11,31 @@ import pytest
 
 from bootstrap import ServiceContainer, ensure_initial_admin
 from core.enums import CommentTarget, MessageRole, UserRole
-from core.models import Branch, Conversation, Message
+from core.models import Branch, Comment, Conversation, Message
+from core.pagination import Page
 from modules.interfaces.comments_intf import CommentSubmission
 from modules.repositories import (
     BranchRepository,
     ConversationRepository,
     MessageRepository,
 )
+from modules.services.pagination import MAX_PAGE_SIZE
+
+
+def _all_comments(
+    container: ServiceContainer,
+    conversation_source_id: str,
+) -> list[Comment]:
+    """取完一个对话下的全部评论
+
+    评论接口现在按页返回, 这些用例关心的是"聚合结果对不对"而不是分页本身,
+    所以用一页足够大的窗口把结果取完.
+    """
+
+    return container.comment_service.list_by_conversation_including_messages(
+        conversation_source_id,
+        Page(limit=MAX_PAGE_SIZE),
+    ).items
 
 
 @pytest.fixture
@@ -129,9 +147,7 @@ def test_conversation_comment_query_includes_message_comments(
     )
 
     direct = container.comment_service.list_by_conversation("conv-1")
-    combined = container.comment_service.list_by_conversation_including_messages(
-        "conv-1",
-    )
+    combined = _all_comments(container, "conv-1")
 
     assert [comment.content for comment in direct] == ["对话级评论"]
     assert [comment.content for comment in combined] == ["对话级评论", "消息级评论"]
@@ -161,9 +177,7 @@ def test_conversation_comment_query_excludes_deleted_comments(
     )
     container.comment_service.delete(admin, removed.id)
 
-    combined = container.comment_service.list_by_conversation_including_messages(
-        "conv-1",
-    )
+    combined = _all_comments(container, "conv-1")
 
     assert [comment.id for comment in combined] == [kept.id]
     assert container.comment_service.list_by_message("msg-1") == []
@@ -184,6 +198,4 @@ def test_conversation_comment_query_ignores_other_conversations(
         ),
     )
 
-    assert container.comment_service.list_by_conversation_including_messages(
-        "conv-unknown",
-    ) == []
+    assert _all_comments(container, "conv-unknown") == []

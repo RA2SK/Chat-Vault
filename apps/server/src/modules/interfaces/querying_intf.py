@@ -15,6 +15,7 @@ from core.models import (
     Conversation,
     Message,
 )
+from core.pagination import Page, PageResult
 
 
 @dataclass
@@ -40,12 +41,16 @@ class QueryingServiceContract(Protocol):
     `PublicationServiceContract` 等更高层的契约负责.
     """
 
-    def list_conversations(self) -> list[Conversation]:
-        """返回所有对话, 供管理员或本地输出端使用"""
+    def list_conversations(self, page: Page) -> PageResult[Conversation]:
+        """返回一页对话, 供管理员或本地输出端使用
+
+        窗口由调用方给出, 服务层不再提供"不传就返回全部"的隐式路径:
+        那等于把无界查询留在架构里
+        """
         ...
 
-    def list_published_conversations(self) -> list[Conversation]:
-        """返回已发布的对话, 供普通用户或公开输出端使用"""
+    def list_published_conversations(self, page: Page) -> PageResult[Conversation]:
+        """返回一页已发布的对话, 供普通用户或公开输出端使用"""
         ...
 
     def get_conversation(self, conversation_source_id: str) -> Conversation | None:
@@ -82,12 +87,27 @@ class QueryingServiceContract(Protocol):
         """获取某个对话下的分支列表"""
         ...
 
-    def list_messages(self, branch_source_id: str) -> list[Message]:
-        """获取某个分支下按 position 排序的消息"""
+    def list_messages(
+        self,
+        branch_source_id: str,
+        page: Page,
+    ) -> PageResult[Message]:
+        """获取某个分支下按 position 排序的一页消息"""
         ...
 
     def list_attachments(self, message_source_id: str) -> list[Attachment]:
         """获取某条消息下的附件列表"""
+        ...
+
+    def list_attachments_for_messages(
+        self,
+        message_source_ids: list[str],
+    ) -> dict[str, list[Attachment]]:
+        """一次获取多条消息下的附件, 按消息来源 ID 分组返回
+
+        供分页展示场景使用: 一页消息可能有几十条, 逐条查询会产生几十次
+        查询, 而这里只需要 1 次
+        """
         ...
 
 
