@@ -6,14 +6,17 @@
 权限规则由实现内部执行, 不在契约中表达:
 - 添加和删除标记需要管理员权限
 - 编辑消息需要管理员权限
+
+当前用户一律以 `UserView` 传入, 不使用带密码散列的领域模型.
 """
 
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from core.enums import MarkType
-from core.models import AdminMark, User
+from core.models import AdminMark
 from core.types import AdminMarkId
+from modules.interfaces.users_intf import UserView
 
 
 @dataclass
@@ -37,7 +40,7 @@ class ModerationServiceContract(Protocol):
 
     def add_mark(
         self,
-        user: User | None,
+        user: UserView | None,
         message_source_id: str,
         mark_type: MarkType,
     ) -> AdminMark:
@@ -47,7 +50,7 @@ class ModerationServiceContract(Protocol):
         """
         ...
 
-    def remove_mark(self, user: User | None, mark_id: AdminMarkId) -> None:
+    def remove_mark(self, user: UserView | None, mark_id: AdminMarkId) -> None:
         """软删除一个管理员标记, 需要管理员权限"""
         ...
 

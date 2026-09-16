@@ -3,12 +3,12 @@
 本模块同时声明对外暴露的用户形状. 核心的 `User` 模型带有 `password_hash`,
 它是持久化细节, 不应该出现在任何对外结果中, 因此对外一律使用 `UserView`.
 
-`UserView` 是目标形状. 当前 `UserService.register` 和 `UserService.get`
-仍然返回完整的 `User`, 尚未做字段剥离, 因此契约暂时按现状声明返回类型,
-待用户信息整理逻辑实现后再收窄为视图类型.
+用户服务对外只返回 `UserView`. 需要密码散列的只有认证和改密两个内部流程,
+它们在实现内部自行从仓储取回 `User`, 散列不会穿过契约边界.
 
 权限判断函数 (is_admin, require_admin 等) 留在服务层, 不进入契约:
-它们是跨服务复用的真实逻辑, 且属于实现细节而非调用契约.
+它们是跨服务复用的真实逻辑, 且属于实现细节而非调用契约. 它们接收
+`UserView | None`, 因为判断权限只需要 `id` 和 `role` 两个字段.
 
 真正的会话管理和持久化权限体系尚未实现, 因此本模块不声明会话相关调用,
 `SessionStore` 只是先占位的形状约定.
@@ -31,6 +31,21 @@ class UserView:
     username: str
     role: UserRole
     created_at: datetime | None = None
+
+    @classmethod
+    def from_model(cls, user: User) -> "UserView":
+        """把领域模型转换成对外视图, 只复制允许暴露的字段
+
+        刻意逐字段复制而不是 `dataclasses.asdict`: 只有显式列举的字段才可能
+        越过契约边界, `User` 以后新增字段时不会因为疏忽而被自动带出去.
+        """
+
+        return cls(
+            id=user.id,
+            username=user.username,
+            role=user.role,
+            created_at=user.created_at,
+        )
 
 
 @dataclass
@@ -91,7 +106,7 @@ class UserServiceContract(Protocol):
     用户信息的暴露面. 需要判断管理员是否存在时使用 `has_admin`.
     """
 
-    def register(self, username: str, password: str) -> User:
+    def register(self, username: str, password: str) -> UserView:
         """注册一个新用户
 
         用户名或密码为空时抛出 ValueError, 用户名已存在时抛出 ValueError.
@@ -100,7 +115,7 @@ class UserServiceContract(Protocol):
         """
         ...
 
-    def register_admin(self, username: str, password: str) -> User:
+    def register_admin(self, username: str, password: str) -> UserView:
         """注册一个新管理员
 
         校验规则与 `register` 相同, 唯一区别是角色为管理员.
@@ -116,28 +131,33 @@ class UserServiceContract(Protocol):
         """
         ...
 
-    def authenticate(self, username: str, password: str) -> User | None:
-        """校验用户名和密码, 成功时返回用户, 失败时返回 None"""
+    def authenticate(self, username: str, password: str) -> UserView | None:
+        """校验用户名和密码, 成功时返回用户视图, 失败时返回 None
+
+        认证需要读取密码散列, 但散列不进入返回值, 因此失败时返回 None 而不是
+        区分"用户不存在"和"密码错误", 避免泄露用户名是否存在.
+        """
         ...
 
-    def get(self, user_id: UserId) -> User | None:
+    def get(self, user_id: UserId) -> UserView | None:
         """根据 ID 获取用户"""
         ...
 
-    def get_by_username(self, username: str) -> User | None:
+    def get_by_username(self, username: str) -> UserView | None:
         """根据用户名获取用户"""
         ...
 
     def change_password(
         self,
-        user: User,
+        user: UserView,
         old_password: str,
         new_password: str,
     ) -> None:
         """校验旧密码后更新用户密码
 
+        只接收 `UserView`, 由实现内部按视图中的 id 取回领域模型后再接触散列.
         用户未登录时抛出 PermissionError, 旧密码不正确时抛出 PermissionError,
-        新密码为空时抛出 ValueError
+        新密码为空时抛出 ValueError, 用户已不存在时抛出 LookupError
         """
         ...
 

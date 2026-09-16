@@ -18,32 +18,13 @@ __all__ = [
     "Branch",
     "Comment",
     "Conversation",
-    "ConversationDetail",
     "ImportBatch",
-    "ImportService",
     "Message",
     "MessageRevision",
-    "QueryService",
-    "ServiceContainer",
     "User",
 ]
 
-
-def __getattr__(name: str) -> object:
-    if name == "ImportService":
-        from modules.services.importing import ImportService
-
-        return ImportService
-    if name == "ConversationDetail":
-        from modules.interfaces.querying_intf import ConversationDetail
-
-        return ConversationDetail
-    if name == "QueryService":
-        from modules.services.querying import QueryService
-
-        return QueryService
-    if name == "ServiceContainer":
-        from bootstrap import ServiceContainer
-
-        return ServiceContainer
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+# 这个包只对外暴露领域模型.
+# ConversationDetail 是查询调用的结果形状, 它组织的是模型而不是模型本身,
+# 因此属于接口层, 由 modules.interfaces 导出.
+# 服务实现和容器不是核心层概念, 需要时直接从各自的模块导入.

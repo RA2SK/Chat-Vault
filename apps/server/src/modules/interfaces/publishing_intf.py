@@ -4,10 +4,12 @@
 展示输出必须剥离思考内容, 原始备份位置和导入批次等内部字段,
 只保留前端能够安全使用的部分.
 
-`PublishedConversationView` 和 `PublishedMessageView` 是展示输出的目标形状.
-当前 `PublishingService.get_conversation_for_view` 仍然直接返回
-`ConversationDetail`, 尚未做字段剥离, 因此契约暂时按现状声明返回类型,
-待展示整理逻辑实现后再收窄为视图类型.
+展示输出按"当前链"展开: 一个对话在库内可以有多条分支, 但展示场景只呈现
+当前链, 每条消息的 position 在所属分支内从 1 开始编号, 把多条分支并成一个
+平铺列表会产生重复序号和互相冲突的内容.
+
+`list_for_view` 返回 `PublishedConversationSummary`, 它是展示场景的列表项,
+比 `Conversation` 少了备份组织和导入批次字段.
 """
 
 from dataclasses import dataclass, field
@@ -15,8 +17,8 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from core.enums import MessageRole
-from core.models import Conversation, User
-from modules.interfaces.querying_intf import ConversationDetail
+from core.models import Conversation
+from modules.interfaces.users_intf import UserView
 
 
 @dataclass
@@ -52,6 +54,21 @@ class PublishedConversationView:
     messages: list[PublishedMessageView] = field(default_factory=list)
 
 
+@dataclass
+class PublishedConversationSummary:
+    """展示场景下的对话列表项
+
+    列表场景不需要消息内容, 因此只保留标题和时间. 与
+    `PublishedConversationView` 一样剥离备份组织和导入批次字段,
+    避免列表接口成为泄露这些字段的旁路
+    """
+
+    source_id: str
+    title: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 @runtime_checkable
 class PublicationServiceContract(Protocol):
     """发布能力契约
@@ -61,32 +78,38 @@ class PublicationServiceContract(Protocol):
     调用方不需要也不应该自己判断权限.
     """
 
-    def list_for_view(self, user: User | None) -> list[Conversation]:
+    def list_for_view(
+        self,
+        user: UserView | None,
+    ) -> list[PublishedConversationSummary]:
         """按用户权限返回可查看的对话列表
 
-        管理员看到全部对话, 其他用户只看到已发布的对话
+        管理员看到全部对话, 其他用户只看到已发布的对话.
+        返回值已剥离备份组织和导入批次字段
         """
         ...
 
     def get_conversation_for_view(
         self,
-        user: User | None,
+        user: UserView | None,
         conversation_source_id: str,
-    ) -> ConversationDetail | None:
-        """按用户权限获取一个对话的完整详情
+    ) -> PublishedConversationView | None:
+        """按用户权限获取一个对话的展示详情
 
-        对话不存在时返回 None, 存在但无权查看时抛出 PermissionError
+        无权查看时返回 None, 对话不存在时也返回 None. 两种情况统一返回
+        None, 是为了让调用方无法通过返回值区分"对话不存在"和"存在但未发布",
+        否则未发布的对话标题会被枚举出来.
         """
         ...
 
-    def publish(self, user: User | None, conversation_source_id: str) -> Conversation:
+    def publish(self, user: UserView | None, conversation_source_id: str) -> Conversation:
         """发布一个对话, 需要管理员权限
 
         对话不存在时抛出 LookupError, 权限不足时抛出 PermissionError
         """
         ...
 
-    def unpublish(self, user: User | None, conversation_source_id: str) -> Conversation:
+    def unpublish(self, user: UserView | None, conversation_source_id: str) -> Conversation:
         """隐藏一个对话, 需要管理员权限
 
         对话不存在时抛出 LookupError, 权限不足时抛出 PermissionError
@@ -96,6 +119,7 @@ class PublicationServiceContract(Protocol):
 
 __all__ = [
     "PublicationServiceContract",
+    "PublishedConversationSummary",
     "PublishedConversationView",
     "PublishedMessageView",
 ]

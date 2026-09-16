@@ -3,8 +3,9 @@
 from datetime import datetime, timezone
 
 from core.enums import CommentTarget
-from core.models import Comment, Conversation, User
+from core.models import Comment, Conversation
 from core.types import CommentId
+from modules.interfaces.users_intf import UserView
 from modules.repositories.comments import CommentRepository
 from modules.repositories.database import transaction
 from modules.services.publishing import can_view_conversation
@@ -12,7 +13,7 @@ from modules.services.querying import QueryService
 from modules.services.users import is_admin, is_authenticated, require_admin
 
 
-def can_create_comment(user: User | None, conversation: Conversation) -> bool:
+def can_create_comment(user: UserView | None, conversation: Conversation) -> bool:
     """判断用户是否可以在指定对话下创建评论"""
 
     return (
@@ -21,7 +22,7 @@ def can_create_comment(user: User | None, conversation: Conversation) -> bool:
     )
 
 
-def can_delete_comment(user: User | None, comment: Comment) -> bool:
+def can_delete_comment(user: UserView | None, comment: Comment) -> bool:
     """判断用户是否可以删除评论"""
 
     return is_admin(user)
@@ -41,7 +42,7 @@ class CommentService:
 
     def create(
         self,
-        user: User | None,
+            user: UserView | None,
         target_type: CommentTarget,
         target_source_id: str,
         content: str,
@@ -128,7 +129,7 @@ class CommentService:
         return self.comment_repository.list_by_message(message_source_id)
 
 
-    def delete(self, user: User | None, comment_id: CommentId) -> None:
+    def delete(self, user: UserView | None, comment_id: CommentId) -> None:
         """软删除一条评论"""
 
         require_admin(user)

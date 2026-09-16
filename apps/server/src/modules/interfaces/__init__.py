@@ -31,6 +31,7 @@ from modules.interfaces.moderation_intf import (
 )
 from modules.interfaces.publishing_intf import (
     PublicationServiceContract,
+    PublishedConversationSummary,
     PublishedConversationView,
     PublishedMessageView,
 )
@@ -78,8 +79,9 @@ __all__ = [
     "ParseResult",
     "PasswordChange",
     "PublicationServiceContract",
-    "PublishedConversationView",
-    "PublishedMessageView",
+        "PublishedConversationSummary",
+        "PublishedConversationView",
+        "PublishedMessageView",
     "QueryingServiceContract",
     "SessionStore",
     "UserRegistration",

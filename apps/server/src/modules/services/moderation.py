@@ -3,27 +3,28 @@
 from datetime import datetime, timezone
 
 from core.enums import MarkType
-from core.models import AdminMark, Message, User
+from core.models import AdminMark, Message
 from core.types import AdminMarkId
+from modules.interfaces.users_intf import UserView
 from modules.repositories.database import transaction
 from modules.repositories.messages import MessageRepository
 from modules.repositories.moderation import AdminMarkRepository
 from modules.services.users import is_admin, require_admin
 
 
-def can_edit_message(user: User | None, message: Message) -> bool:
+def can_edit_message(user: UserView | None, message: Message) -> bool:
     """判断用户是否可以编辑指定消息"""
 
     return is_admin(user)
 
 
-def can_create_admin_mark(user: User | None, message: Message) -> bool:
+def can_create_admin_mark(user: UserView | None, message: Message) -> bool:
     """判断用户是否可以为消息添加管理员标记"""
 
     return is_admin(user)
 
 
-def can_delete_admin_mark(user: User | None, mark: AdminMark) -> bool:
+def can_delete_admin_mark(user: UserView | None, mark: AdminMark) -> bool:
     """判断用户是否可以删除管理员标记"""
 
     return is_admin(user)
@@ -43,7 +44,7 @@ class ModerationService:
 
     def add_mark(
         self,
-        user: User | None,
+            user: UserView | None,
         message_source_id: str,
         mark_type: MarkType,
     ) -> AdminMark:
@@ -69,7 +70,7 @@ class ModerationService:
         return mark
 
 
-    def remove_mark(self, user: User | None, mark_id: AdminMarkId) -> None:
+    def remove_mark(self, user: UserView | None, mark_id: AdminMarkId) -> None:
         """软删除一个管理员标记"""
 
         require_admin(user)

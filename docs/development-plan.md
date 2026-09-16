@@ -2,6 +2,19 @@
 
 ## 一、更新日志
 
+### 2026-09-17（契约边界收窄与展示视图落地）
+
+- 用户服务对外返回值统一收窄为 `UserView`：`register()`、`register_admin()`、`get()`、`get_by_username()` 返回视图，`authenticate()` 返回 `UserView | None`。新增 `UserView.from_model()` 逐字段复制允许暴露的字段，刻意不用 `dataclasses.asdict`，这样 `User` 以后新增字段时不会因为疏忽被自动带出去。
+- `password_hash` 不再穿过契约边界：新增私有方法 `_authenticate_user()` 返回领域模型，只在认证成功后签发会话、改密前确认旧密码这类内部流程中使用。
+- `change_password()` 入参由 `User` 改为 `UserView`：实现内部按视图中的 id 重新取回领域模型，调用方无法通过持有 `User` 绕过校验。空新密码抛 `ValueError`，用户已不存在抛 `LookupError`，旧密码不正确抛 `PermissionError`。
+- 权限判断函数 `is_admin()`、`is_authenticated()`、`require_admin()`、`require_authenticated()` 的入参由 `User | None` 放宽为 `UserView | None`，因为判断权限只需要 `id` 和 `role`。`comments.py`、`moderation.py`、`publishing.py` 与契约文件的当前用户类型同步改为 `UserView | None`。
+- 发布服务真正产出展示视图：新增模块级映射函数 `to_published_message_view()`、`to_published_conversation_view()`、`to_published_conversation_summary()` 与私有 `_current_branch()`，剥离策略放在发布用例内部而不是共享工具里，因为"哪些字段对外可见"是发布场景的规则。
+- `PublicationServiceContract.list_for_view()` 返回类型由 `list[Conversation]` 收窄为 `list[PublishedConversationSummary]`（新增的列表项形状），`get_conversation_for_view()` 由 `ConversationDetail | None` 收窄为 `PublishedConversationView | None`。展示输出剥离 `thinking`、`edited_by`、`source_archive`、`source_entry`、`source_type`、`is_published`、`import_batch_id` 和 `branches`。
+- 展示按"当前链"展开：优先取 `is_current` 的分支，没有标记时取消息最多的一条，避免对话因为元数据缺失显示为空。刻意不合并多条分支，因为每条消息的 `position` 在所属分支内编号，合并会产生重复序号和互相冲突的内容。
+- 修复可见性不对称：此前"对话不存在"返回 `None` 而"存在但未发布"抛 `PermissionError`，两者可区分，未发布的对话标题因此会被枚举出来。现在两种情况统一返回 `None`。
+- 删除 `core/__init__.py` 的惰性再导出（`__getattr__`）：`ConversationDetail` 是一次查询调用的产出形状，属于接口层；服务实现和容器不是核心层概念。三个名字都没有调用方，因此无需改动调用点。此改动同时消除了 4 条 pyright 的 `reportUnsupportedDunderAll` 警告。
+- 新增 `tests/test_boundary_stripping.py`，覆盖用户服务返回值不含 `password_hash`、`User` 模型字段变化时提醒是否暴露、改密的三条失败路径、列表项与详情视图不泄露内部字段、展示只展开当前链、附件以 `source_ref` 传出、未发布对话对普通用户与不存在对话返回同一个结果。
+
 ### 2026-09-16（事务边界、重复导入与分支更新）
 
 - 事务边界从"依赖 SQLite 隐式事务"改为"在服务层显式声明"：`repositories/database.py` 的 `transaction()` 上下文管理器补齐调用点，`ImportService`、`CommentService`、`ModerationService`、`UserService`、`PublishingService` 的每个写操作各自包在一个 `with transaction(connection):` 里，使"一次业务操作 = 一个事务"在代码里可直接读出来。`ServiceContainer.close()` 在关闭连接前先回滚未提交的事务，避免关闭时静默丢数据。
@@ -113,12 +126,12 @@
 
 - `apps/server/src/modules/services/importing.py`：已完成适配器调用、解析结果处理、基础校验、幂等保存（含按文件内容摘要的重复导入检测）、`source_archive` 归档信息和导入批次统计；每个导入操作的事务边界已落地，更复杂的错误恢复和更多边界规则尚未实现。
 - `apps/server/src/modules/services/querying.py`：已完成对话列表、已发布对话列表、对话详情以及分支、消息和附件的基础查询；复杂搜索、筛选、排序和分页尚未实现。
-- `apps/server/src/modules/services/users.py`：已完成权限判断、普通用户注册、管理员注册、`has_admin` 检查、认证与改密；返回值的 `UserView` 收窄、用户信息维护和会话管理尚未实现。`register()`/`get()` 目前仍返回带 `password_hash` 的 `User`，调用方不得直接把该对象交给前端。
-- `apps/server/src/modules/services/publishing.py`：只有预先准备好的最小发布权限判断；发布内容整理和展示字段处理尚未实现。
+- `apps/server/src/modules/services/users.py`：已完成权限判断、普通用户注册、管理员注册、`has_admin` 检查、认证与改密；用户信息维护和会话管理尚未实现。对外返回值已统一收窄为 `UserView`，需要读取 `password_hash` 的认证与改密流程改为在实现内部取回领域模型，密码散列不再穿过契约边界。
+- `apps/server/src/modules/services/publishing.py`：已完成发布权限判断、发布状态切换，以及展示视图的产出：`list_for_view` 返回 `PublishedConversationSummary`，`get_conversation_for_view` 返回 `PublishedConversationView`，两者均已剥离思考内容、备份组织方式、导入批次和编辑者等内部字段；展示按当前链展开，不合并历史分支。未发布对话对非管理员统一返回 `None`。
 - `apps/server/src/modules/services/moderation.py`：只有预先准备好的最小管理权限判断；管理员编辑、标记和维护流程尚未实现。
 - `apps/server/src/modules/services/comments.py`：已完成评论的创建、按对话查询、按消息查询、对话级聚合查询和软删除；评论编辑按设计不提供，修改意见只能删除后重发。
-- `apps/server/src/core/__init__.py`：仅完成基础公共导出；更复杂的业务初始化和导出控制尚未实现。
-- `apps/server/src/modules/interfaces/`：契约层已完整建立。`repositories_intf.py`、`importing_intf.py`、`querying_intf.py`、`publishing_intf.py`、`moderation_intf.py`、`comments_intf.py`、`users_intf.py`、`exporting_intf.py` 与 `__init__.py` 均已写入契约；仍属"已部分完成"，因为部分契约按当前实现现状声明（`PublicationServiceContract.get_conversation_for_view` 仍返回 `ConversationDetail`，`UserServiceContract.register`/`get` 仍返回带 `password_hash` 的 `User`），尚未收窄为契约中声明的 `PublishedConversationView` 与 `UserView`；`exporting_intf.py` 只声明了形状，没有任何实现。
+- `apps/server/src/core/__init__.py`：仅完成领域模型的公共导出。`ConversationDetail` 是查询调用的结果形状，已归于接口层；服务实现和容器不再从本包惰性再导出，需要时直接从各自模块导入。
+- `apps/server/src/modules/interfaces/`：契约层已完整建立。`repositories_intf.py`、`importing_intf.py`、`querying_intf.py`、`publishing_intf.py`、`moderation_intf.py`、`comments_intf.py`、`users_intf.py`、`exporting_intf.py` 与 `__init__.py` 均已写入契约；各契约的输入输出形状均已与实际实现一致，`PublicationServiceContract` 声明 `PublishedConversationView`，`UserServiceContract` 声明 `UserView`；`exporting_intf.py` 只声明了形状，没有任何实现。
 
 ### 未开工
 

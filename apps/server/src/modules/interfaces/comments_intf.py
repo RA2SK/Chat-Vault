@@ -4,6 +4,8 @@
 - 创建评论需要已登录, 并且有权查看评论目标所在的对话
 - 删除评论需要管理员权限
 
+当前用户一律以 `UserView` 传入, 不使用带密码散列的领域模型.
+
 契约只声明软删除. 评论需要保留审计痕迹, 不提供物理删除.
 """
 
@@ -11,8 +13,9 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from core.enums import CommentTarget
-from core.models import Comment, User
+from core.models import Comment
 from core.types import CommentId
+from modules.interfaces.users_intf import UserView
 
 
 @dataclass
@@ -46,7 +49,7 @@ class CommentServiceContract(Protocol):
 
     def create(
         self,
-        user: User | None,
+            user: UserView | None,
         target_type: CommentTarget,
         target_source_id: str,
         content: str,
@@ -83,7 +86,7 @@ class CommentServiceContract(Protocol):
         """查询某条消息下的有效评论, 已删除的评论不返回"""
         ...
 
-    def delete(self, user: User | None, comment_id: CommentId) -> None:
+    def delete(self, user: UserView | None, comment_id: CommentId) -> None:
         """软删除一条评论, 需要管理员权限"""
         ...
 

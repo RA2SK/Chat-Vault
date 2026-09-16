@@ -5,12 +5,13 @@ from datetime import datetime, timezone
 from core.enums import UserRole
 from core.models import User
 from core.types import UserId
+from modules.interfaces.users_intf import UserView
 from modules.repositories.database import transaction
 from modules.repositories.users import UserRepository
 from utils.hashing import hash_password, verify_password
 
 
-def is_admin(user: User | None) -> bool:
+def is_admin(user: UserView | None) -> bool:
     """判断用户是否为管理员"""
 
     return (
@@ -20,7 +21,7 @@ def is_admin(user: User | None) -> bool:
     )
 
 
-def is_authenticated(user: User | None) -> bool:
+def is_authenticated(user: UserView | None) -> bool:
     """判断用户是否已登录"""
 
     return (
@@ -29,14 +30,14 @@ def is_authenticated(user: User | None) -> bool:
     )
 
 
-def require_admin(user: User | None) -> None:
+def require_admin(user: UserView | None) -> None:
     """要求当前用户必须是管理员，否则抛出权限异常"""
 
     if not is_admin(user):
         raise PermissionError("需要管理员权限")
 
 
-def require_authenticated(user: User | None) -> None:
+def require_authenticated(user: UserView | None) -> None:
     """要求当前用户必须已登录，否则抛出权限异常"""
 
     if not is_authenticated(user):
@@ -50,7 +51,7 @@ class UserService:
         self.user_repository = user_repository
 
 
-    def register(self, username: str, password: str) -> User:
+    def register(self, username: str, password: str) -> UserView:
         """注册一个新用户
 
         新用户固定为普通用户. 需要创建管理员时使用 `register_admin`,
@@ -60,7 +61,7 @@ class UserService:
         return self._create_user(username, password, UserRole.USER)
 
 
-    def register_admin(self, username: str, password: str) -> User:
+    def register_admin(self, username: str, password: str) -> UserView:
         """注册一个新管理员
 
         与 `register` 的唯一区别是角色. 不做任何隐式的"第一个用户升格",
@@ -76,7 +77,7 @@ class UserService:
         return self.user_repository.has_role(UserRole.ADMIN)
 
 
-    def _create_user(self, username: str, password: str, role: UserRole) -> User:
+    def _create_user(self, username: str, password: str, role: UserRole) -> UserView:
         """创建用户并落库, 用户名与密码的校验由本方法统一负责"""
 
         if not username or not password:
@@ -96,11 +97,28 @@ class UserService:
 
             self.user_repository.create(user)
 
-        return user
+        return UserView.from_model(user)
 
 
-    def authenticate(self, username: str, password: str) -> User | None:
-        """校验用户名和密码, 成功时返回用户"""
+    def authenticate(self, username: str, password: str) -> UserView | None:
+        """校验用户名和密码, 成功时返回用户视图
+
+        密码散列只在 `_authenticate_user` 内部出现, 本方法立刻丢掉它.
+        """
+
+        user = self._authenticate_user(username, password)
+        if user is None:
+            return None
+
+        return UserView.from_model(user)
+
+
+    def _authenticate_user(self, username: str, password: str) -> User | None:
+        """校验用户名和密码, 成功时返回领域模型
+
+        只在需要密码散列的流程内部使用, 例如认证成功后签发会话, 或改密前
+        确认旧密码. 结果不对外返回.
+        """
 
         user = self.user_repository.get_by_username(username)
         if user is None:
@@ -112,35 +130,51 @@ class UserService:
         return user
 
 
-    def get(self, user_id: UserId) -> User | None:
+    def get(self, user_id: UserId) -> UserView | None:
         """根据 ID 获取用户"""
 
-        return self.user_repository.get_by_id(user_id)
+        user = self.user_repository.get_by_id(user_id)
+        if user is None:
+            return None
+
+        return UserView.from_model(user)
 
 
-    def get_by_username(self, username: str) -> User | None:
+    def get_by_username(self, username: str) -> UserView | None:
         """根据用户名获取用户"""
 
-        return self.user_repository.get_by_username(username)
+        user = self.user_repository.get_by_username(username)
+        if user is None:
+            return None
+
+        return UserView.from_model(user)
 
 
     def change_password(
         self,
-        user: User,
+        user: UserView,
         old_password: str,
         new_password: str,
     ) -> None:
-        """校验旧密码后更新用户密码"""
+        """校验旧密码后更新用户密码
+
+        入参只有视图, 因此按视图中的 id 重新取回领域模型. 这样调用方无法
+        通过持有 User 直接绕过校验, 也避免散列出现在契约边界之外.
+        """
 
         require_authenticated(user)
-
-        if not verify_password(old_password, user.password_hash):
-            raise PermissionError("旧密码不正确")
 
         if not new_password:
             raise ValueError("新密码不能为空")
 
-        user.password_hash = hash_password(new_password)
+        current = self.user_repository.get_by_id(user.id)
+        if current is None:
+            raise LookupError(f"用户 {user.id} 不存在")
+
+        if not verify_password(old_password, current.password_hash):
+            raise PermissionError("旧密码不正确")
+
+        current.password_hash = hash_password(new_password)
 
         with transaction(self.user_repository.connection):
-            self.user_repository.update(user)
+            self.user_repository.update(current)
