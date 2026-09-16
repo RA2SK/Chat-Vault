@@ -403,24 +403,32 @@ def add_mark(
 
 @router.get(
     "/admin/messages/{message_source_id}/marks",
-    response_model=list[MarkResponse],
+    response_model=PageResponse[MarkResponse],
     tags=["admin"],
-    summary="查询一条消息下的管理员标记",
+    summary="分页查询一条消息下的管理员标记",
 )
 def list_marks(
     message_source_id: str,
     user: CurrentUserDep,
     moderation_service: ModerationServiceDep,
-) -> list[MarkResponse]:
-    """查询一条消息下的有效管理员标记, 需要管理员权限
+    limit: int | None = Query(None, ge=1),
+    offset: int = Query(0, ge=0),
+) -> PageResponse[MarkResponse]:
+    """分页查询一条消息下的有效管理员标记, 需要管理员权限
 
     标记是管理员对消息的批注, 属于管理侧数据, 因此不随公开读取接口暴露.
+    返回分页信封而不是裸数组, 与其余列表接口保持一致.
     """
 
-    return [
-        MarkResponse.from_model(mark)
-        for mark in moderation_service.list_marks(user, message_source_id)
-    ]
+    page = normalize_page(limit, offset)
+    result = moderation_service.list_marks(user, message_source_id, page)
+
+    return PageResponse[MarkResponse](
+        items=[MarkResponse.from_model(mark) for mark in result.items],
+        limit=page.limit,
+        offset=page.offset,
+        has_more=result.has_more,
+    )
 
 
 @router.delete(

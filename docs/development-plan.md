@@ -1,6 +1,17 @@
-# 项目开发台账
+﻿# 项目开发台账
 
 ## 一、更新日志
+
+### 2026-09-23（后端测试套件补齐、附件查询去重、标记接口分页与来源枚举修正）
+
+本轮先补齐了后端测试套件，再按测试暴露出的问题做了三处修正，最后确认后端可以进入前端开发。
+
+- **补齐后端测试套件（新增 `tests/test_repositories.py`、`tests/test_chatbox_importer.py`、`tests/test_import_service.py`、`tests/test_logging.py`）**。此前 `tests/` 下有三个 0 字节的占位文件，仓储层、Chatbox 适配器和导入服务实际上没有直接测试，`utils/logging.py` 更是完全没有覆盖。现在四个文件分别覆盖：七个仓储类的增删改查、分页契约、软删除的 rowcount 契约、`_to_enum` 不回落与 `_to_source_type` 回落这两条相反规则的差异；Chatbox 适配器的格式识别、全部错误与警告分支、线程与分叉传播、各类 part 的处理、时间戳与图片路径安全；导入服务的三条前置失败路径、重复导入短路、部分失败仍记成功、异常路径下失败批次确实落库、以及校验器的完整顺序；日志模块的处理器幂等性、级别名解析、文本与 JSON 两种格式的行形状、额外字段提取与敏感字段脱敏。测试总数从 171 增至 470。
+- **修正附件查询的重复执行（`modules/services/importing.py`）**。原 `_save_attachment()` 的文档字符串写着"把该消息的附件一次性取成字典, 避免每条附件都重新查一遍库"，但字典是在方法内部构造的，而方法被逐附件调用，因此同一条消息的 N 个附件会产生 N 次完全相同的查询——文档描述的行为从未生效。现在拆成 `_save_attachments(message)` 与 `_save_one_attachment(attachment, existing_by_ref)`：前者按消息查一次并构造字典，后者只做写入判断，不再自己查库。`tests/test_import_service.py` 里原本把这个行为当作"已知问题"钉住的用例已改为断言"每条消息只查一次"。
+- **管理员标记列表接口改为分页信封（`api/routes.py`、`api/schemas.py`、`modules/services/moderation.py`、`modules/repositories/moderation.py`、`modules/interfaces/`）**。`GET /api/admin/messages/{id}/marks` 此前是全部 14 个接口里唯一返回裸数组的列表接口，前端要为此写第二套解析逻辑，而且没有 `limit`/`offset` 参数可以加，将来数据变多只能破坏性改契约。现在返回 `PageResponse[MarkResponse]`，`AdminMarkRepository.list_by_message()` 接受 `limit`/`offset` 并返回 `PageResult[AdminMark]`，与对话列表、消息列表、评论列表完全一致。分页同样采用"多取一行判断 `has_more`"，不额外发 `COUNT` 查询。
+- **修正来源类型枚举取值（`core/enums.py`）**。`SourceType.CHERRY_STUDIO` 的值原为 `"cherry studio"`，含空格。来源类型会作为来源标识的命名空间前缀，而命名空间校验拒绝任何含空白的前缀，因此该来源的标识**一个都无法通过校验**——一旦接入 Cherry Studio 适配器，整个导入流程会全线失败。现在改为 `"cherry-studio"`。空白字符那条校验保留，用于拦住将来新增的、取值带空格的枚举。`modules/adapters/preprocess.py` 中原本把"某个枚举值天生非法"描述成"有意为之"的注释已改写，说明真正的要求是枚举取值必须是不含空白的标识符。
+- **为无生产调用方的查询方法补注释（`modules/services/querying.py`、`modules/services/comments.py`）**。`QueryingService.list_attachments`、`CommentService.list_by_conversation`、`CommentService.list_by_message` 目前只有测试在调用。这三者本身是合理的查询入口（将来做消息详情页会用到），但长期没有调用方就是维护负担，因此各自注明"当前没有生产调用方、展示侧走的是哪个方法、新增调用方前要先确认什么"，避免后来人误以为它们是主路径。
+- **确认后端可以进入前端开发**。全量测试 470 项通过；`ruff` 无新增问题（剩余 12 项 `E501` 为既有问题）；`pyright` 在 `basic` 模式下 0 错误 0 警告。接口契约、异常体系、分页信封、日志与文本集中管理均已就位，前端可以按 OpenAPI 文档对接。
 
 ### 2026-09-22（偏移分页、详情查询去 N+1 与请求校验错误形状统一）
 
@@ -254,12 +265,19 @@
 
 - `apps/server/src/modules/services/querying.py`
   - 复杂搜索和筛选尚未实现，详见"待更新功能"。
+  - `list_attachments()` 目前没有生产调用方，展示侧走的是 `list_attachments_for_messages()` 批量版本；这一点已在文档字符串中注明。
 
 - `apps/server/src/modules/services/users.py`
   - 真正的认证系统、会话管理和持久化权限体系尚未实现。当前 `api/dependencies.py` 从请求头取用户名作为身份来源，这是程序只在本地运行阶段的临时方案，接入真正的认证时只需替换 `get_current_user()` 的函数体。
 
-- `apps/server/src/modules/services/publishing.py`、`moderation.py`、`comments.py`
+- `apps/server/src/modules/services/publishing.py`
   - 权限校验已接入全部对外入口；更细粒度的权限规则（例如按对话授权）尚未实现。
+
+- `apps/server/src/modules/services/moderation.py`、`comments.py`
+  - 权限校验已接入全部对外入口；更细粒度的权限规则（例如按对话授权）尚未实现。
+  - `ModerationService.list_marks()` 已接入分页，与其余列表接口一致。
+  - `CommentService.list_by_conversation()` 与 `list_by_message()` 目前没有生产调用方，展示侧走的是 `list_by_conversation_including_messages()`；两者已在文档字符串中注明，新增调用方前需先确认合并版本不适用。
+
 
 - `apps/server/src/bootstrap.py`
   - 跨服务的事务编排和更完善的（尤其涉及多服务协作的）服务生命周期管理尚未实现。
@@ -269,6 +287,7 @@
 
 - `apps/server/src/modules/repositories/schema.sql`
   - 当前为基础版本；未来需要根据 `core/models/` 的字段、关系和约束变化继续完善。
+  - `conversations.source_type` 与 `import_batches.source_type` 有意不加 CHECK 约束，因为来源格式会随适配器增长；代价是历史数据里可能残留已废弃的取值。读取时 `mappings.py` 的 `_to_source_type()` 会回退到 `SourceType.OTHER`，不会报错但会静默改写来源，需要清理旧值时必须靠外部数据迁移。
 
 - `apps/server/src/modules/repositories/database.py`
   - 基础连接和事务功能已完成；未来可能根据数据库迁移和模型演化需求扩展。

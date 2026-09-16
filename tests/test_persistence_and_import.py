@@ -18,6 +18,7 @@ import pytest
 from bootstrap import ServiceContainer
 from core.enums import MarkType, MessageRole
 from core.models import Attachment, Branch, Conversation, Message
+from core.pagination import Page
 from modules.interfaces.importing_intf import ParseResult
 from modules.repositories import BranchRepository, MessageRepository
 
@@ -419,8 +420,12 @@ def test_list_marks_excludes_deleted_marks(
     removed = container.moderation_service.add_mark(admin, FIRST_MESSAGE, MarkType.PIN)
     container.moderation_service.remove_mark(admin, removed.id)
 
-    marks = container.moderation_service.list_marks(admin, FIRST_MESSAGE)
-    assert [mark.id for mark in marks] == [kept.id]
+    marks = container.moderation_service.list_marks(
+        admin,
+        FIRST_MESSAGE,
+        Page(limit=50),
+    )
+    assert [mark.id for mark in marks.items] == [kept.id]
 
 
 def test_mark_requires_admin(

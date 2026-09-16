@@ -19,10 +19,16 @@ class MessageRole(str, Enum):
 
 
 class SourceType(str, Enum):
-    """对话内容的来源格式"""
+    """对话内容的来源格式
+
+    取值一律使用不含空白的短横杠形式: 来源类型会作为来源标识的命名空间前缀
+    (见 `modules/adapters/preprocess.py`), 而命名空间校验拒绝任何含空白的
+    前缀. 用 "cherry studio" 这类带空格的名字会让该来源的标识全部无法通过
+    校验, 因此这里统一用 "cherry-studio".
+    """
 
     CHATBOX = "chatbox"
-    CHERRY_STUDIO = "cherry studio"
+    CHERRY_STUDIO = "cherry-studio"
     OTHER = "other"
 
 

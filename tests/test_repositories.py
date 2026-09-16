@@ -1334,16 +1334,48 @@ def test_admin_mark_roundtrip_and_deleted_filtering(
 
     loaded = repository.list_by_message("conv-1::main::msg-1")
 
-    assert [mark.id for mark in loaded] == [kept.id]
-    assert loaded[0].mark_type == MarkType.HIGHLIGHT
-    assert loaded[0].created_by == user.id
-    assert loaded[0].is_deleted is False
+    assert [mark.id for mark in loaded.items] == [kept.id]
+    assert loaded.has_more is False
+    assert loaded.items[0].mark_type == MarkType.HIGHLIGHT
+    assert loaded.items[0].created_by == user.id
+    assert loaded.items[0].is_deleted is False
 
 
 def test_admin_mark_list_by_message_returns_empty_for_unknown_message(
     connection: sqlite3.Connection,
 ) -> None:
-    assert AdminMarkRepository(connection).list_by_message("nope") == []
+    assert AdminMarkRepository(connection).list_by_message("nope").items == []
+
+
+def test_admin_mark_list_by_message_pages_without_overlap(
+    connection: sqlite3.Connection,
+) -> None:
+    """分页时多取一行判断 has_more, 且相邻两页不重叠"""
+
+    _seed_conversation(connection)
+    _seed_branch(connection)
+    _seed_message(connection)
+    user = _seed_user(connection)
+    repository = AdminMarkRepository(connection)
+
+    for index in range(3):
+        repository.create(
+            AdminMark(
+                message_source_id="conv-1::main::msg-1",
+                mark_type=MarkType.HIGHLIGHT,
+                created_at=_at(index),
+                created_by=user.id,
+            )
+        )
+
+    first = repository.list_by_message("conv-1::main::msg-1", limit=2, offset=0)
+    second = repository.list_by_message("conv-1::main::msg-1", limit=2, offset=2)
+
+    assert len(first.items) == 2
+    assert first.has_more is True
+    assert len(second.items) == 1
+    assert second.has_more is False
+    assert {mark.id for mark in first.items} & {mark.id for mark in second.items} == set()
 
 
 def test_admin_mark_soft_delete_reports_whether_a_row_changed(

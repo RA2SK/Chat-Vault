@@ -309,15 +309,11 @@ class ImportService:
             if existing.edited_at is None:
                 self.message_repository.update(message)
 
-        for attachment in message.attachments:                  # 逐个处理附件
-            self._save_attachment(attachment)
+        self._save_attachments(message)
 
 
-    def _save_attachment(
-        self,
-        attachment: Attachment,
-    ) -> None:
-        """保存或更新一个附件
+    def _save_attachments(self, message: Message) -> None:
+        """保存或更新一条消息下的全部附件
 
         附件的主键是 (message_source_id, source_ref), 因此判断"是否已存在"
         只需要按 source_ref 查一次. 这里把该消息的附件一次性取成字典, 避免
@@ -326,10 +322,23 @@ class ImportService:
 
         existing_by_ref = {
             item.source_ref: item
-            for item in self.attachment_repository.list_by_message(
-                attachment.message_source_id
-            )
+            for item in self.attachment_repository.list_by_message(message.source_id)
         }
+
+        for attachment in message.attachments:                  # 逐个处理附件
+            self._save_one_attachment(attachment, existing_by_ref)
+
+
+    def _save_one_attachment(
+        self,
+        attachment: Attachment,
+        existing_by_ref: dict[str, Attachment],
+    ) -> None:
+        """保存或更新一个附件, 复用调用方已经查好的同消息附件字典
+
+        ``existing_by_ref`` 由 :meth:`_save_attachments` 构造并传入, 本方法
+        不再自己查库, 否则同一条消息的 N 个附件会产生 N 次完全相同的查询.
+        """
 
         if attachment.source_ref not in existing_by_ref:
             self.attachment_repository.create(attachment)

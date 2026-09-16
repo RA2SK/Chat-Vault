@@ -1102,16 +1102,16 @@ def test_reimport_adds_new_attachment(
     ]
 
 
-def test_attachment_lookup_is_repeated_per_attachment(
+def test_attachment_lookup_happens_once_per_message(
     container: ServiceContainer,
     tmp_path: Path,
 ) -> None:
-    """已知问题: 同一条消息的每个附件都会重新查一次附件表
+    """同一条消息的多个附件只查一次附件表
 
     附件主键是 (message_source_id, source_ref), 判断"是否已存在"只需要按
-    source_ref 查一次, 但实现把这次查询放在了逐附件的循环里, 因此 N 个附件
-    会产生 N 次完全相同的查询. 本测试把这个行为固定下来, 便于将来优化时
-    能立刻看出差异.
+    source_ref 查一次. 实现把这次查询提到逐附件的循环之外, 因此 N 个附件
+    只产生 1 次查询. 本测试把这个行为固定下来, 防止将来有人把查询挪回
+    循环内部.
     """
 
     attachments = [
@@ -1141,7 +1141,7 @@ def test_attachment_lookup_is_repeated_per_attachment(
         _build_conversation(attachments=attachments),
     )
 
-    assert calls == [FIRST_MESSAGE, FIRST_MESSAGE, FIRST_MESSAGE]
+    assert calls == [FIRST_MESSAGE]
 
 
 # === _validate_conversation 的校验顺序 ===

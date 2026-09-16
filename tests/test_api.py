@@ -560,7 +560,11 @@ def test_marks_are_readable_after_creation(
     listed = client.get(f"/api/admin/messages/{MESSAGE_ID}/marks")
 
     assert listed.status_code == 200
-    assert [mark["id"] for mark in listed.json()] == [created.json()["id"]]
+    body = listed.json()
+    assert [mark["id"] for mark in body["items"]] == [created.json()["id"]]
+    assert body["limit"] == 50
+    assert body["offset"] == 0
+    assert body["has_more"] is False
 
 
 def test_deleted_mark_disappears_from_listing(
@@ -580,7 +584,50 @@ def test_deleted_mark_disappears_from_listing(
     listed = client.get(f"/api/admin/messages/{MESSAGE_ID}/marks")
 
     assert listed.status_code == 200
-    assert listed.json() == []
+    assert listed.json()["items"] == []
+
+
+def test_marks_listing_is_paginated(
+    client: TestClient,
+    container: ServiceContainer,
+    app: FastAPI,
+) -> None:
+    """标记列表必须支持分页, 且 has_more 要如实反映还有没有下一页"""
+
+    _seed_conversation(container, is_published=True)
+    _act_as(app, _admin(container))
+
+    for _ in range(3):
+        created = client.post(
+            f"/api/admin/messages/{MESSAGE_ID}/marks",
+            json={"mark_type": MarkType.HIGHLIGHT.value},
+        )
+        assert created.status_code == 201
+
+    first = client.get(
+        f"/api/admin/messages/{MESSAGE_ID}/marks",
+        params={"limit": 2, "offset": 0},
+    )
+
+    assert first.status_code == 200
+    body = first.json()
+    assert len(body["items"]) == 2
+    assert body["limit"] == 2
+    assert body["offset"] == 0
+    assert body["has_more"] is True
+
+    second = client.get(
+        f"/api/admin/messages/{MESSAGE_ID}/marks",
+        params={"limit": 2, "offset": 2},
+    )
+
+    assert second.status_code == 200
+    tail = second.json()
+    assert len(tail["items"]) == 1
+    assert tail["has_more"] is False
+    assert {mark["id"] for mark in body["items"]} & {
+        mark["id"] for mark in tail["items"]
+    } == set()
 
 
 def test_anonymous_cannot_list_marks(

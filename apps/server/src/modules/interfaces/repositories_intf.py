@@ -224,8 +224,16 @@ class AdminMarkStore(Protocol):
         """保存一个管理员标记"""
         ...
 
-    def list_by_message(self, message_source_id: str) -> list[AdminMark]:
-        """查询某条消息下的管理员标记, 已删除的标记不返回"""
+    def list_by_message(
+        self,
+        message_source_id: str,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> PageResult[AdminMark]:
+        """查询某条消息下的管理员标记, 已删除的标记不返回
+
+        limit 为 None 表示不分页
+        """
         ...
 
     def soft_delete(self, mark_id: AdminMarkId) -> None:

@@ -26,10 +26,10 @@ def with_source_namespace(source_type: SourceType, raw_source_id: str) -> str:
             来源名称含空白字符 (SOURCE_NAMESPACE_WHITESPACE);
             来源名称含命名空间分隔符 (SOURCE_NAMESPACE_SEPARATOR)
 
-    来源名称取自 ``SourceType.value``, 其中 ``SourceType.CHERRY_STUDIO`` 的值
-    是 ``"cherry studio"``, 含空格, 因此它会在空白字符那一条被拦下. 这是预期
-    行为: 前缀里出现空格会让 ``source_id`` 的切分产生歧义. 前缀要用作命名空间
-    时, 需要的是不含空白的标识符, 而不是展示用的名称.
+    来源名称取自 ``SourceType.value``. 枚举取值一律使用不含空白的短横杠形式
+    (例如 ``"cherry-studio"``), 因为前缀里出现空格会让 ``source_id`` 的切分
+    产生歧义. 前缀要用作命名空间时, 需要的是不含空白的标识符, 而不是展示用的
+    名称. 空白字符那一条校验保留下来, 用于拦住将来新增的、取值带空格的枚举.
     """
 
     if not isinstance(source_type, SourceType) or not isinstance(raw_source_id, str):

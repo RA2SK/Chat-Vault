@@ -126,6 +126,11 @@ class CommentService:
 
         只返回直接挂在对话下的评论, 不包含该对话所属消息的评论.
         需要覆盖消息评论时使用 `list_by_conversation_including_messages`.
+
+        当前没有生产调用方: 展示侧一律走 `list_by_conversation_including_messages`,
+        因为前端要展示的是"这个对话下的所有讨论". 保留本方法是为了让"只要
+        对话级评论"这个语义有明确的入口, 而不是让调用方去猜合并版本能不能
+        过滤. 新增调用方前请先确认确实不需要消息级评论.
         """
 
         return self.comment_repository.list_by_conversation(conversation_source_id)
@@ -150,7 +155,12 @@ class CommentService:
 
 
     def list_by_message(self, message_source_id: str) -> list[Comment]:
-        """查询某条消息下的有效评论"""
+        """查询某条消息下的有效评论
+
+        当前没有生产调用方: 展示侧走 `list_by_conversation_including_messages`
+        一次取全. 保留本方法是为了让"单条消息的评论"这个语义有明确入口,
+        将来做消息详情页时会用到.
+        """
 
         return self.comment_repository.list_by_message(message_source_id)
 

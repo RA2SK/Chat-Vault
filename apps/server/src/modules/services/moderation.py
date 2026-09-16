@@ -4,6 +4,7 @@ from core.enums import MarkType
 from core.exceptions import NotAuthenticatedError, NotFoundError
 from core.messages import MessageKey
 from core.models import AdminMark, Message
+from core.pagination import Page, PageResult
 from core.types import AdminMarkId
 from modules.interfaces.users_intf import UserView
 from modules.repositories.database import transaction
@@ -94,9 +95,14 @@ class ModerationService:
         self,
         user: UserView | None,
         message_source_id: str,
-    ) -> list[AdminMark]:
-        """查询某条消息下的有效管理员标记, 已删除的标记不返回"""
+        page: Page,
+    ) -> PageResult[AdminMark]:
+        """分页查询某条消息下的有效管理员标记, 已删除的标记不返回"""
 
         require_admin(user)
 
-        return self.admin_mark_repository.list_by_message(message_source_id)
+        return self.admin_mark_repository.list_by_message(
+            message_source_id,
+            limit=page.limit,
+            offset=page.offset,
+        )

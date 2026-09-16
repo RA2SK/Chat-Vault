@@ -126,7 +126,13 @@ class QueryService:
 
 
     def list_attachments(self, message_source_id: str) -> list[Attachment]:
-        """获取某条消息下的附件列表"""
+        """获取某条消息下的附件列表
+
+        当前没有生产调用方: 展示侧一律走 `list_attachments_for_messages`
+        批量取附件, 避免逐条消息查库. 保留本方法是因为"单条消息的附件"
+        是查询契约里自然的一格, 且导入服务需要按消息查已有附件. 新增调用方
+        前请先确认批量版本不适用.
+        """
 
         return self.attachment_repository.list_by_message(message_source_id)
 
