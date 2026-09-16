@@ -2,6 +2,24 @@
 
 ## 一、更新日志
 
+### 2026-09-19（Web API 落地与共享连接并发修复）
+
+- 新增 `api/schemas.py`：请求与响应模型。响应模型刻意不复用领域模型，而是逐字段声明，`ConversationSummaryResponse` 同时提供 `from_view()` 与 `from_model()` 两个构造入口，前者用于列表查询，后者用于发布状态切换——发布接口返回的是领域模型 `Conversation`，直接序列化会把 `source_archive`、`source_entry`、`import_batch_id` 这些内部字段泄露出去。`MarkCreateRequest` 只带 `mark_type`，消息标识由路径给出，避免路径与请求体两处都能指定同一个值而产生分歧。
+- 新增 `api/dependencies.py`：依赖装配的唯一入口。`get_current_user()` 从 `X-Chat-Vault-User` 请求头取用户名，再经 `user_service.get_by_username()` 解析成真实的 `UserView`。这是当前阶段（程序只在本地运行、调用方就是部署者本人）的临时身份来源，刻意不做成"开发模式管理员后门"：后门会绕过用户表，使 `created_by` 指向不存在的用户，将来接入真正的认证时还要专门拆掉。真正的认证落地时只需要替换这个函数的函数体，签名和全部调用点都不用动。
+- 新增 `api/routes.py`：13 个端点，统一挂在 `APIRouter(prefix="/api")` 下。公开读取一律走 `PublicationServiceContract`，不碰 `QueryingServiceContract`，因为后者不做可见性判断。`GET /api/conversations/{id}` 对"不存在"和"未发布"都返回 404（服务层已把两者统一收敛为 `None`），未发布的标题因此无法被枚举。`GET /api/conversations/{id}/comments` 先调用 `get_conversation_for_view()` 确认可见，再调用评论聚合查询，否则会泄露未发布对话下的评论。导入端点接收文件系统路径而不是上传文件，因为 `python-multipart` 尚未安装，`UploadFile` 不可用。
+- `main.py` 挂载路由：`include_router(router)` 放在 `register_exception_handlers()` 之前。
+- 新增 `MessageKey.LOGIN_FAILED`：`authenticate()` 认证失败时返回 `None` 而不是抛异常，此前没有"用户名或密码不正确"这条文案可用。
+- 把导入器解析函数上提到 `modules/adapters/__init__.py`：新增 `resolve_importer()` 与 `detect_importer()`，`cli.py` 与 `api/routes.py` 共用同一份实现，`cli.py` 里的两个本地副本随之删除。`detect_importer()` 增加了路径存在性预检，否则文件不存在会被误判成格式不匹配。
+- `CommentServiceContract.create()` 的入参由拆开的四个参数改为整体传入 `CommentSubmission`：Web 层的请求模型和命令行层的参数解析各自转换成本形状后走同一条路径，新增字段时不必再改调用签名。
+- `ModerationServiceContract.list_marks()` 增加当前用户参数并补上管理员校验：此前任何调用方都能读到管理员标记。
+- 修复共享数据库连接的并发缺陷（`modules/repositories/database.py`）。连接在 lifespan 所在线程创建，而同步路由由 FastAPI 的线程池执行，因此同一个连接必然被多个线程使用，暴露出两个真实故障：
+  - 一个线程的 `commit()` 会把另一个线程尚未完成的事务一并提交，回滚同理。实测两个线程交错执行时，本该回滚的写入留在了库里。修复方式是让 `transaction()` 在整个事务期间持有连接锁。
+  - 一个线程的 `commit()` 会重置另一个线程尚未读完的游标，使 `fetchone()` 返回 `None` 或返回字段为空的残缺行，并发执行语句还会直接抛 `InterfaceError`。这个故障在真实压测中表现为 500（`ValueError: Invalid isoformat string: ''`，读到了空的时间戳字段）和偶发的 401（用户查询读到残缺行，被当成用户不存在）。只在 `execute()` 上加锁挡不住它，因为 `connection.execute(...).fetchone()` 的 `fetchone()` 发生在锁之外。修复方式是新增 `_MaterializedCursor`，在 `execute()` 持锁期间就把结果一次性取出并缓存，之后所有 `fetch` 只读缓存，于是整条语句成为原子操作，仓储代码无需任何改动。
+  - 连接改用 `check_same_thread=False` 并装配 `_LockedConnection`。锁是模块级可重入锁而不是按连接分锁：`sqlite3.Connection` 既不支持弱引用也不允许附加属性，按连接登记锁需要额外的生命周期管理，而本程序同时只使用一个连接。
+- 新增 `tests/test_api.py`（27 项）与两项并发回归测试：`test_transaction_rollback_is_not_swallowed_by_other_thread` 与 `test_concurrent_commit_does_not_reset_in_flight_cursor`。两项都验证过在移除修复后确实失败。
+- 端到端验证：用真实 uvicorn 服务跑通全部 13 个端点，并用 16 并发、40 次评论写入加 40 次对话读取的压测确认修复前出现的 500 与 401 全部消失（连续三轮均为 40×201 + 40×200）。
+- 全量测试 150 项通过；`ruff` 无新增问题（剩余 12 项 `E501` 为既有问题）；`pyright` 在 `basic` 模式下 0 错误。
+
 ### 2026-09-18（异常体系、文本集中管理与入口文件）
 
 - 建立业务异常体系 `core/exceptions.py`：新增基类 `ChatVaultError`，以及 `ValidationError`(400)、`NotFoundError`(404)、`ConflictError`(409)、`PermissionDeniedError`(403)、`NotAuthenticatedError`(401)、`ImportFailedError`(422)、`PersistenceError`(500) 七个具体类型。每个具体类型都额外继承一个对应的内置异常（例如 `ValidationError` 同时继承 `ValueError`、`NotFoundError` 同时继承 `LookupError`、`NotAuthenticatedError` 与 `PermissionDeniedError` 同时继承 `PermissionError`），这样既有调用点的 `except ValueError` / `except LookupError` / `except PermissionError` 写法继续有效，异常分类也不再靠字符串判断。刻意没有定义 `ImportError` 这个名字，它会与内置的同名异常混淆。
@@ -124,7 +142,7 @@
 - `apps/server/src/modules/adapters/__init__.py`：完成适配器注册。
 - `apps/server/src/modules/adapters/preprocess.py`：完成 `source_id` 命名空间拼接和通用预处理校验。
 - `apps/server/src/modules/adapters/chatbox_v2.py`：完成 Chatbox v2 ZIP 的格式识别、manifest、resource 索引、session、thread、conversation、branch、message、image attachment 和 warning 处理。
-- `apps/server/src/modules/repositories/database.py`：完成 SQLite 连接、外键设置、数据库初始化和事务管理。
+- `apps/server/src/modules/repositories/database.py`：完成 SQLite 连接、外键设置、数据库初始化和事务管理。连接装配为 `_LockedConnection`，语句执行返回 `_MaterializedCursor`，两者共同保证多线程共用同一个连接时的原子性，详见更新日志。
 - `apps/server/src/modules/repositories/schema.sql`：完成数据库表、字段、索引和外键约束，暂不持久化 `MessageRevision`。
 - `apps/server/src/modules/repositories/mappings.py`：完成数据库行与核心模型之间的转换，集中持有列名知识以及时间、校验值的双向转换。
 - `apps/server/src/modules/repositories/conversations.py`：完成 `ConversationRepository` 和 `BranchRepository`。
@@ -134,6 +152,10 @@
 - `apps/server/src/modules/repositories/comments.py`：完成 `CommentRepository`。
 - `apps/server/src/modules/repositories/moderation.py`：完成 `AdminMarkRepository`。
 - `apps/server/src/modules/repositories/__init__.py`：完成 8 个仓储类的统一导出。
+- `apps/server/src/api/exception_handlers.py`：完成业务异常到 HTTP 状态码的映射与统一错误响应体。
+- `apps/server/src/api/schemas.py`：完成请求与响应模型，响应模型逐字段声明，不直接序列化领域模型。
+- `apps/server/src/api/dependencies.py`：完成依赖装配，`get_current_user()` 是当前阶段唯一的身份来源。
+- `apps/server/src/api/routes.py`：完成 13 个端点，公开读取一律走发布服务，不碰查询服务。
 - `apps/server/src/bootstrap.py`：完成数据库连接、8 个仓储和两个业务服务的依赖组装。服务级事务边界已在各服务内声明，跨服务的事务编排和更完整的生命周期管理尚未实现。
 
 ### 已部分完成
@@ -149,7 +171,6 @@
 
 ### 未开工
 
-- `apps/server/src/api/routes.py`、`schemas.py`、`dependencies.py`：文件已建立，Web API 路由、请求响应校验和依赖提供尚未开始；`exception_handlers.py` 已完成。
 - `apps/server/src/modules/interfaces/exporting_intf.py`：内容重新打包契约已声明形状，输出端实现、Web 数据提交和落盘编排尚未开始。
 - `apps/server/src/utils/hashing.py`：文件已建立，校验和计算尚未开始。
 - `apps/client/src/`：前端仅建立基础目录和项目入口，对话浏览、Markdown 模拟渲染、搜索、评论和管理界面尚未开始。
@@ -175,10 +196,10 @@
   - 复杂搜索、筛选、排序和分页尚未实现。
 
 - `apps/server/src/modules/services/users.py`
-  - 真正的认证系统、会话管理和持久化权限体系尚未实现。
+  - 真正的认证系统、会话管理和持久化权限体系尚未实现。当前 `api/dependencies.py` 从请求头取用户名作为身份来源，这是程序只在本地运行阶段的临时方案，接入真正的认证时只需替换 `get_current_user()` 的函数体。
 
 - `apps/server/src/modules/services/publishing.py`、`moderation.py`、`comments.py`
-  - 目前只有预先准备好的权限校验代码，业务主体尚未实现。
+  - 权限校验已接入全部对外入口；更细粒度的权限规则（例如按对话授权）尚未实现。
 
 - `apps/server/src/bootstrap.py`
   - 跨服务的事务编排和更完善的（尤其涉及多服务协作的）服务生命周期管理尚未实现。
@@ -191,13 +212,15 @@
 
 - `apps/server/src/modules/repositories/database.py`
   - 基础连接和事务功能已完成；未来可能根据数据库迁移和模型演化需求扩展。
+  - 当前用一把模块级可重入锁串行化全部数据库访问，这对单连接设计是正确且廉价的；若将来改为连接池，锁需要改为按连接持有，届时必须显式管理生命周期，因为 `sqlite3.Connection` 既不支持弱引用也不允许附加属性。
+  - `bootstrap.py` 的 `ServiceContainer.close()` 内联了回滚与关闭，没有调用 `close_connection()`；若将来引入按连接的锁登记，这里需要同步更新。
 
 - `apps/server/src/modules/repositories/`
   - 基础 Repository 已完成；未来需要根据 `core/models/` 的完善同步增加或调整持久化字段、关系和查询接口；仓储层收到的修改需求也在累积，需要安排一次统一调整。
 
 ### 不属于单个文件的更新内容
 
-- 完成 Web API 与前端之间的数据接口。
+- 完成 Web API 与前端之间的数据接口：服务端 13 个端点已落地，前端尚未接入。
 - 完成前端对话展示、Markdown 模拟渲染、评论回传和未来下载功能。
 - 适配器、导入服务、存储层和输出层尚未接入统一日志接口：`utils/logging.py` 已提供格式化与脱敏能力，但各层目前仍只有极少量日志调用点，需要随业务补齐。
 - 仓储层已对外统一以 `source_id` 标识内容对象，数据库主键不再离开持久化层；后续新增查询接口时需要继续保持这一约定。
