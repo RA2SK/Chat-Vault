@@ -1,9 +1,10 @@
 """管理数据库连接, 事务, 初始化流程和数据库运行配置"""
 
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator
+from typing import Any, Generator
 
 from core.exceptions import PersistenceError
 from core.messages import MessageKey
@@ -12,6 +13,123 @@ from core.messages import MessageKey
 # 程序尚未成型, 数据库暂时生成在 data/raw 下, 完成后再迁回 data 下
 DEFAULT_DATABASE_PATH = Path("data/raw/chat_vault.db")
 DEFAULT_SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+
+# 连接锁: 多个线程共用同一个连接时, 一个线程的 commit 会把另一个线程尚未
+# 完成的事务一并提交, 回滚同理; 更直接的是, 两个线程同时在一个连接上执行
+# 语句会让 sqlite3 抛出 InterfaceError. 因此连接上的每一次语句执行和事务
+# 收尾都必须互斥. 锁是可重入的, 嵌套调用不会自锁. 这里用一把全局锁而不是
+# 按连接分锁: 连接对象不支持弱引用, 也不允许附加属性, 按连接登记锁需要额外
+# 的生命周期管理, 而本程序同时只使用一个连接, 全局锁的代价可以忽略
+_CONNECTION_LOCK = threading.RLock()
+
+
+class _MaterializedCursor(sqlite3.Cursor):
+    """在语句执行完毕时就取走全部结果的游标
+
+    游标本身不是线程安全的: 一个线程的 commit 会重置另一个线程尚未读完的
+    游标, 使 fetchone 返回 None 或返回字段为空的残缺行, 并发执行语句还会
+    直接抛出 InterfaceError. 只在 execute 上加锁挡不住这一点, 因为
+    ``connection.execute(...).fetchone()`` 的 fetchone 发生在锁之外.
+
+    这里把结果在 execute 期间一次性取出并缓存, 之后所有 fetch 都只读缓存,
+    于是 ``connection.execute(...).fetchone()`` 整体成为原子操作, 仓储代码
+    无需任何改动. 代价是结果集全量驻留内存, 本程序的查询规模远小于此.
+    """
+
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        cursor: sqlite3.Cursor,
+        rows: list[Any],
+    ) -> None:
+        super().__init__(connection)
+        self._rows = rows
+        self._index = 0
+        self._description = cursor.description
+        self._rowcount = cursor.rowcount
+        self._lastrowid = cursor.lastrowid
+
+
+    @property
+    def description(self):
+        return self._description
+
+
+    @property
+    def rowcount(self):
+        return self._rowcount
+
+
+    @property
+    def lastrowid(self):
+        return self._lastrowid
+
+
+    def fetchone(self):
+        if self._index >= len(self._rows):
+            return None
+
+        row = self._rows[self._index]
+        self._index += 1
+        return row
+
+
+    def fetchall(self):
+        rows = self._rows[self._index:]
+        self._index = len(self._rows)
+        return rows
+
+
+    def fetchmany(self, size: int | None = None):
+        if size is None:
+            size = 1
+
+        rows = self._rows[self._index : self._index + size]
+        self._index += len(rows)
+        return rows
+
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
+
+class _LockedConnection(sqlite3.Connection):
+    """在每次语句执行和事务收尾时加锁的连接
+
+    通过 ``sqlite3.connect(factory=...)`` 装配. 选择子类而不是在每个仓储里
+    手动加锁: 仓储只持有连接对象, 逐个改仓储会漏掉新增的调用点, 而连接是
+    所有数据库访问的唯一入口, 在这里加锁能覆盖全部路径.
+
+    语句执行返回的是 _MaterializedCursor, 结果在锁内取完, 因此调用方在锁外
+    继续 fetch 也是安全的.
+    """
+
+    def execute(self, *args, **kwargs):
+        with _CONNECTION_LOCK:
+            cursor = super().execute(*args, **kwargs)
+            return _MaterializedCursor(self, cursor, cursor.fetchall())
+
+
+    def executemany(self, *args, **kwargs):
+        with _CONNECTION_LOCK:
+            cursor = super().executemany(*args, **kwargs)
+            return _MaterializedCursor(self, cursor, cursor.fetchall())
+
+
+    def executescript(self, *args, **kwargs):
+        with _CONNECTION_LOCK:
+            cursor = super().executescript(*args, **kwargs)
+            return _MaterializedCursor(self, cursor, cursor.fetchall())
+
+
+    def commit(self):
+        with _CONNECTION_LOCK:
+            return super().commit()
+
+
+    def rollback(self):
+        with _CONNECTION_LOCK:
+            return super().rollback()
 
 
 def get_connection(
@@ -29,7 +147,16 @@ def get_connection(
             exist_ok=True,
         )
 
-        connection = sqlite3.connect(database_path)
+        # check_same_thread=False: 连接在 lifespan 所在线程创建, 而同步路由由
+        # FastAPI 的线程池执行, 两者不是同一个线程. 跨线程使用本身是安全的
+        # (sqlite3.threadsafety 为 3), 但多个线程共用同一个连接时, 一个线程的
+        # commit 会提交另一个线程尚未完成的事务, 并发执行语句还会直接报错,
+        # 因此连接上的访问必须串行化, 见 _LockedConnection
+        connection = sqlite3.connect(
+            database_path,
+            check_same_thread=False,
+            factory=_LockedConnection,
+        )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
     except (OSError, sqlite3.Error) as exc:
@@ -67,15 +194,21 @@ def initialize_database(
 def transaction(
     connection: sqlite3.Connection,
 ) -> Generator[sqlite3.Connection, None, None]:
-    """提供事务上下文, 成功提交, 异常时回滚"""
+    """提供事务上下文, 成功提交, 异常时回滚
 
-    try:
-        yield connection
-    except Exception:
-        connection.rollback()
-        raise
-    else:
-        connection.commit()
+    事务之间互斥执行. 多个线程共用同一个连接时, 一个线程的 commit 会把另一个
+    线程尚未完成的事务一并提交, 回滚同理, 因此整个事务期间都必须持有连接锁,
+    只在单条语句上加锁不足以让事务保持原子. 锁是可重入的, 嵌套调用不会自锁.
+    """
+
+    with _CONNECTION_LOCK:
+        try:
+            yield connection
+        except Exception:
+            connection.rollback()
+            raise
+        else:
+            connection.commit()
 
 
 def close_connection(connection: sqlite3.Connection) -> None:
@@ -85,5 +218,3 @@ def close_connection(connection: sqlite3.Connection) -> None:
         connection.rollback()
 
     connection.close()
-
-

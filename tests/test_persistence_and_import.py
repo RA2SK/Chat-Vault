@@ -127,6 +127,172 @@ def test_service_write_survives_reopen(
         reopened.close()
 
 
+def test_transaction_rollback_is_not_swallowed_by_other_thread(
+    container: ServiceContainer,
+) -> None:
+    """一个线程的回滚不能被另一个线程的提交吞掉
+
+    多个线程共用同一个连接时, 一个线程的 commit 会把另一个线程尚未完成的
+    事务一并提交, 于是本该回滚的写入会留在库里. 事务之间必须互斥, 这里用
+    两个线程交错执行来验证这一点.
+    """
+
+    import threading
+    import time
+
+    from modules.repositories.database import transaction
+
+    connection = container.connection
+    connection.execute("CREATE TABLE probe (v INTEGER)")
+    connection.commit()
+
+    second_done = threading.Event()
+
+    def writer_that_rolls_back() -> None:
+        """写入一行后回滚"""
+
+        try:
+            with transaction(connection):
+                connection.execute("INSERT INTO probe VALUES (1)")
+                time.sleep(0.3)
+                raise RuntimeError("故意失败, 触发回滚")
+        except RuntimeError:
+            pass
+
+    def writer_that_commits() -> None:
+        """在另一个线程回滚之前提交自己的写入"""
+
+        time.sleep(0.1)
+        with transaction(connection):
+            connection.execute("INSERT INTO probe VALUES (2)")
+
+        second_done.set()
+
+    first = threading.Thread(target=writer_that_rolls_back)
+    second = threading.Thread(target=writer_that_commits)
+
+    first.start()
+    second.start()
+    first.join()
+    second.join()
+
+    assert second_done.is_set()
+
+    rows = connection.execute("SELECT v FROM probe ORDER BY v").fetchall()
+    assert [row[0] for row in rows] == [2]
+
+
+def test_concurrent_statements_on_shared_connection_do_not_fail(
+    container: ServiceContainer,
+) -> None:
+    """多个线程在同一个连接上并发执行语句不能报错
+
+    连接由 lifespan 所在线程创建, 而同步路由由 FastAPI 的线程池执行, 因此
+    同一个连接必然被多个线程使用. 两个线程同时在一个连接上执行语句会让
+    sqlite3 抛出 InterfaceError, 并发提交还会互相干扰, 所以连接上的访问必须
+    串行化. 这里用读写混合的并发来验证.
+    """
+
+    import threading
+
+    connection = container.connection
+    connection.execute("CREATE TABLE probe (v INTEGER)")
+    connection.commit()
+
+    errors: list[str] = []
+    barrier = threading.Barrier(8)
+
+    def writer(index: int) -> None:
+        try:
+            barrier.wait(timeout=5)
+            for _ in range(20):
+                connection.execute("INSERT INTO probe VALUES (?)", (index,))
+                connection.commit()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"writer {index}: {type(exc).__name__}: {exc}")
+
+    def reader(index: int) -> None:
+        try:
+            barrier.wait(timeout=5)
+            for _ in range(20):
+                connection.execute("SELECT COUNT(*) FROM probe").fetchone()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"reader {index}: {type(exc).__name__}: {exc}")
+
+    threads = [threading.Thread(target=writer, args=(i,)) for i in range(4)]
+    threads += [threading.Thread(target=reader, args=(i,)) for i in range(4)]
+
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+
+    total = connection.execute("SELECT COUNT(*) FROM probe").fetchone()[0]
+    assert total == 80
+
+
+def test_concurrent_commit_does_not_reset_in_flight_cursor(
+    container: ServiceContainer,
+) -> None:
+    """一个线程的提交不能重置另一个线程尚未读完的游标
+
+    游标本身不是线程安全的: 一个线程的 commit 会重置另一个线程正在读取的
+    游标, 使 fetchone 返回 None 或返回字段为空的残缺行. 只在 execute 上加锁
+    挡不住这一点, 因为 ``connection.execute(...).fetchone()`` 的 fetchone 发生
+    在锁之外. 这里让读线程反复读取同一行, 同时另一个线程不断提交, 验证读到的
+    内容始终完整.
+    """
+
+    import threading
+    import time
+
+    connection = container.connection
+    connection.execute("CREATE TABLE probe (v TEXT NOT NULL)")
+    connection.execute("INSERT INTO probe VALUES ('expected')")
+    connection.commit()
+
+    errors: list[str] = []
+    stop = threading.Event()
+
+    def reader(index: int) -> None:
+        try:
+            while not stop.is_set():
+                row = connection.execute("SELECT v FROM probe").fetchone()
+                if row is None:
+                    errors.append(f"reader {index}: 读到空行")
+                    return
+                if row["v"] != "expected":
+                    errors.append(f"reader {index}: 读到残缺行 {row['v']!r}")
+                    return
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"reader {index}: {type(exc).__name__}: {exc}")
+
+    def committer() -> None:
+        try:
+            while not stop.is_set():
+                connection.commit()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"committer: {type(exc).__name__}: {exc}")
+
+    threads = [threading.Thread(target=reader, args=(i,)) for i in range(4)]
+    threads.append(threading.Thread(target=committer))
+
+    for thread in threads:
+        thread.start()
+
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and not errors:
+        time.sleep(0.01)
+
+    stop.set()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+
+
 def test_reimport_preserves_message_edits(
     container: ServiceContainer,
     tmp_path: Path,
@@ -253,7 +419,7 @@ def test_list_marks_excludes_deleted_marks(
     removed = container.moderation_service.add_mark(admin, FIRST_MESSAGE, MarkType.PIN)
     container.moderation_service.remove_mark(admin, removed.id)
 
-    marks = container.moderation_service.list_marks(FIRST_MESSAGE)
+    marks = container.moderation_service.list_marks(admin, FIRST_MESSAGE)
     assert [mark.id for mark in marks] == [kept.id]
 
 
