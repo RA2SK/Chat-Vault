@@ -41,6 +41,7 @@ class MessageKey(str, Enum):
     NEW_PASSWORD_EMPTY = "new_password_empty"
     USER_NOT_FOUND = "user_not_found"
     PASSWORD_INCORRECT = "password_incorrect"
+    LOGIN_FAILED = "login_failed"
 
     # === 评论与管理员标记 ===
     COMMENT_CONTENT_EMPTY = "comment_content_empty"
@@ -100,6 +101,7 @@ TEXTS: dict[MessageKey, str] = {
     MessageKey.NEW_PASSWORD_EMPTY: "新密码不能为空",
     MessageKey.USER_NOT_FOUND: "用户 {user_id} 不存在",
     MessageKey.PASSWORD_INCORRECT: "旧密码不正确",
+    MessageKey.LOGIN_FAILED: "用户名或密码不正确",
 
     MessageKey.COMMENT_CONTENT_EMPTY: "评论内容不能为空",
     MessageKey.COMMENT_TARGET_INVALID: "评论目标必须是对话或消息",

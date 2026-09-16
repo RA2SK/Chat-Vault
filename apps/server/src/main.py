@@ -32,6 +32,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 
 from api.exception_handlers import register_exception_handlers
+from api.routes import router
 from bootstrap import ServiceContainer, ensure_initial_admin
 from utils.logging import configure_logging
 
@@ -143,6 +144,7 @@ def create_app() -> FastAPI:
     )
 
     # 路由留在 api/routes.py, 由它自己声明前缀和标签, 入口只负责挂载
+    application.include_router(router)
     register_exception_handlers(application)
 
     return application

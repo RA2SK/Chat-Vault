@@ -44,8 +44,7 @@ from core.exceptions import (
     ValidationError,
 )
 from core.messages import MessageKey
-from modules.adapters import REGISTRY
-from modules.adapters.base import BaseImporter
+from modules.adapters import REGISTRY, detect_importer, resolve_importer
 from utils.logging import configure_logging
 
 __all__ = ["main"]
@@ -134,46 +133,13 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_importer(format_key: str) -> BaseImporter:
-    """按格式键取适配器实例
-
-    格式键由 argparse 的 ``choices`` 约束, 因此这里不需要为未知键准备分支:
-    非法取值在参数解析阶段就被拒绝, 根本到不了这一步.
-    """
-
-    return REGISTRY[format_key]()
-
-
-def _detect_importer(path: Path) -> BaseImporter:
-    """按注册顺序找到一个能识别该文件的适配器
-
-    Raises:
-        ImportFailedError: 没有任何适配器识别该文件时抛出
-    """
-
-    for importer_class in REGISTRY.values():
-        importer = importer_class()
-        if importer.detect(path):
-            logger.debug(
-                "已匹配输入适配器",
-                extra={"path": path, "format_key": importer.format_key},
-            )
-            return importer
-
-    raise ImportFailedError(
-        MessageKey.IMPORT_FORMAT_MISMATCH,
-        path=path,
-        format_key=", ".join(sorted(REGISTRY)),
-    )
-
-
 def _run_import(container: ServiceContainer, args: argparse.Namespace) -> int:
     """执行导入命令"""
 
     if args.format_key is not None:
-        importer = _resolve_importer(args.format_key)
+        importer = resolve_importer(args.format_key)
     else:
-        importer = _detect_importer(args.path)
+        importer = detect_importer(args.path)
 
     batch = container.import_service.import_file(args.path, importer)
 
