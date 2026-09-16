@@ -1,4 +1,9 @@
-"""根据查询条件读取对话内容, 组织分支, 消息和附件关系, 并生成查询调用方可使用的结果"""
+"""根据查询条件读取对话内容, 组织分支, 消息和附件关系, 并生成查询调用方可使用的结果
+
+`ConversationDetail` 的定义已经移到 `modules.interfaces.querying_intf`, 因为它描述的是
+一次查询调用的产出形状, 属于调用契约. 这里保留同名导入, 使调用方仍然可以
+从本模块取到它, 不必关心契约层的组织方式.
+"""
 
 from dataclasses import dataclass
 
@@ -8,6 +13,7 @@ from core.models import (
     Conversation,
     Message,
 )
+from modules.interfaces.querying_intf import ConversationDetail
 from modules.repositories import (
     AttachmentRepository,
     BranchRepository,
@@ -15,19 +21,7 @@ from modules.repositories import (
     MessageRepository,
 )
 
-
-@dataclass
-class ConversationDetail:
-    """一个完整的对话详情及其关联内容
-
-    两张映射表都以内容域的 source_id 为键:
-    messages 以 Branch.source_id 为键, attachments 以 Message.source_id 为键
-    """
-
-    conversation: Conversation
-    branches: list[Branch]
-    messages: dict[str, list[Message]]
-    attachments: dict[str, list[Attachment]]
+__all__ = ["ConversationDetail", "QueryService"]
 
 
 @dataclass
@@ -106,3 +100,18 @@ class QueryService:
         """获取某条消息下的附件列表"""
 
         return self.attachment_repository.list_by_message(message_source_id)
+
+
+    def get_message(self, message_source_id: str) -> Message | None:
+        """根据来源 ID 获取一条消息
+
+        供评论等服务判断消息是否存在, 避免它们直接访问消息仓储.
+        """
+
+        return self.message_repository.get_by_source_id(message_source_id)
+
+
+    def get_message_conversation_source_id(self, message_source_id: str) -> str | None:
+        """获取某条消息所属对话的来源 ID, 消息不存在时返回 None"""
+
+        return self.message_repository.get_conversation_source_id(message_source_id)

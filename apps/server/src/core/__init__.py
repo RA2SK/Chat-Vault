@@ -11,6 +11,7 @@ from core.models import (
     MessageRevision,
     User,
 )
+
 __all__ = [
     "AdminMark",
     "Attachment",
@@ -33,10 +34,14 @@ def __getattr__(name: str) -> object:
         from modules.services.importing import ImportService
 
         return ImportService
-    if name in {"ConversationDetail", "QueryService"}:
-        from modules.services.querying import ConversationDetail, QueryService
+    if name == "ConversationDetail":
+        from modules.interfaces.querying_intf import ConversationDetail
 
-        return {"ConversationDetail": ConversationDetail, "QueryService": QueryService}[name]
+        return ConversationDetail
+    if name == "QueryService":
+        from modules.services.querying import QueryService
+
+        return QueryService
     if name == "ServiceContainer":
         from bootstrap import ServiceContainer
 

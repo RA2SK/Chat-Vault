@@ -84,6 +84,26 @@ class MessageRepository:
         return to_message(row)
 
 
+    def get_conversation_source_id(self, message_source_id: str) -> str | None:
+        """查询消息所属对话的 source_id"""
+
+        row = self.connection.execute(
+            """
+            SELECT conversations.source_id
+            FROM messages
+            JOIN branches ON branches.id = messages.branch_id
+            JOIN conversations ON conversations.id = branches.conversation_id
+            WHERE messages.source_id = ?
+            """,
+            (message_source_id,),
+        ).fetchone()
+
+        if row is None:
+            return None
+
+        return row[0]
+
+
     def list_by_branch(self, branch_source_id: str) -> list[Message]:
         """按 position 顺序查询某个分支下的消息"""
 

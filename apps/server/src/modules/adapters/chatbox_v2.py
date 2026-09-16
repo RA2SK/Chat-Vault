@@ -8,8 +8,9 @@ from typing import Iterator, cast
 
 from core.enums import AttachmentType, MessageRole, SourceType
 from core.models import Attachment, Branch, Checksum, Conversation, Message
+from modules.interfaces.importing_intf import ParseResult
 
-from .base import BaseImporter, ParseResult
+from .base import BaseImporter
 from .preprocess import with_source_namespace
 
 

@@ -14,7 +14,8 @@ from core.models import (
     ImportBatch,
     Message,
 )
-from modules.adapters.base import BaseImporter, ParseResult
+from modules.adapters.base import BaseImporter
+from modules.interfaces.importing_intf import ParseResult
 from modules.repositories import (
     AttachmentRepository,
     BranchRepository,

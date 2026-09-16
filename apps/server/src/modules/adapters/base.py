@@ -1,22 +1,18 @@
-"""定义输入适配器需要遵循的基础结构和统一调用方式"""
+"""定义输入适配器需要遵循的基础结构和统一调用方式
 
-from dataclasses import dataclass, field
+`ParseResult` 的定义已经移到 `modules.interfaces.importing_intf`, 因为它描述的是
+一次解析调用的产出形状, 属于调用契约. 这里保留同名导入, 使适配器仍然可以
+从本模块取到它, 不必关心契约层的组织方式.
+"""
+
 from pathlib import Path
 from typing import Iterator
 
 from core.enums import SourceType
-from core.models import Conversation
+from modules.interfaces.importing_intf import ParseResult
 
+__all__ = ["BaseImporter", "ParseResult"]
 
-@dataclass
-class ParseResult:
-    """适配器 parse() 的单个产出"""
-
-    conversation: Conversation | None = None
-    error: str | None = None
-    source_id: str | None = None
-    source_ref: str | None = None
-    warnings: list[str] = field(default_factory=list)
 
 class BaseImporter:
     """输入适配器的接口"""
