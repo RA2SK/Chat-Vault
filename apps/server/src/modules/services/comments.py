@@ -9,6 +9,7 @@ from core.exceptions import (
 from core.messages import MessageKey
 from core.models import Comment, Conversation
 from core.types import CommentId
+from modules.interfaces.comments_intf import CommentSubmission
 from modules.interfaces.users_intf import UserView
 from modules.repositories.comments import CommentRepository
 from modules.repositories.database import transaction
@@ -46,14 +47,14 @@ class CommentService:
     def create(
         self,
         user: UserView | None,
-        target_type: CommentTarget,
-        target_source_id: str,
-        content: str,
-        nickname: str = "anonymous",
+        submission: CommentSubmission,
     ) -> Comment:
         """在对话或消息下创建一条评论"""
 
-        if not content:
+        target_type = submission.target_type
+        target_source_id = submission.target_source_id
+
+        if not submission.content:
             raise ValidationError(MessageKey.COMMENT_CONTENT_EMPTY)
 
         conversation_source_id: str | None = None
@@ -99,10 +100,10 @@ class CommentService:
         assert user is not None
         comment = Comment(
             target_type=target_type,
-            content=content,
+            content=submission.content,
             created_at=datetime.now(timezone.utc),
             created_by=user.id,
-            nickname=nickname,
+            nickname=submission.nickname,
             conversation_source_id=conversation_source_id,
             message_source_id=message_source_id,
         )

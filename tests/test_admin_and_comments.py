@@ -12,6 +12,7 @@ import pytest
 from bootstrap import ServiceContainer, ensure_initial_admin
 from core.enums import CommentTarget, MessageRole, UserRole
 from core.models import Branch, Conversation, Message
+from modules.interfaces.comments_intf import CommentSubmission
 from modules.repositories import (
     BranchRepository,
     ConversationRepository,
@@ -112,15 +113,19 @@ def test_conversation_comment_query_includes_message_comments(
 
     container.comment_service.create(
         admin,
-        CommentTarget.CONVERSATION,
-        "conv-1",
-        "对话级评论",
+        CommentSubmission(
+            target_type=CommentTarget.CONVERSATION,
+            target_source_id="conv-1",
+            content="对话级评论",
+        ),
     )
     container.comment_service.create(
         admin,
-        CommentTarget.MESSAGE,
-        "msg-1",
-        "消息级评论",
+        CommentSubmission(
+            target_type=CommentTarget.MESSAGE,
+            target_source_id="msg-1",
+            content="消息级评论",
+        ),
     )
 
     direct = container.comment_service.list_by_conversation("conv-1")
@@ -140,15 +145,19 @@ def test_conversation_comment_query_excludes_deleted_comments(
 
     kept = container.comment_service.create(
         admin,
-        CommentTarget.CONVERSATION,
-        "conv-1",
-        "保留",
+        CommentSubmission(
+            target_type=CommentTarget.CONVERSATION,
+            target_source_id="conv-1",
+            content="保留",
+        ),
     )
     removed = container.comment_service.create(
         admin,
-        CommentTarget.MESSAGE,
-        "msg-1",
-        "删除",
+        CommentSubmission(
+            target_type=CommentTarget.MESSAGE,
+            target_source_id="msg-1",
+            content="删除",
+        ),
     )
     container.comment_service.delete(admin, removed.id)
 
@@ -168,9 +177,11 @@ def test_conversation_comment_query_ignores_other_conversations(
 
     container.comment_service.create(
         admin,
-        CommentTarget.CONVERSATION,
-        "conv-1",
-        "属于 conv-1",
+        CommentSubmission(
+            target_type=CommentTarget.CONVERSATION,
+            target_source_id="conv-1",
+            content="属于 conv-1",
+        ),
     )
 
     assert container.comment_service.list_by_conversation_including_messages(

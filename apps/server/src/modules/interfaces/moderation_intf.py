@@ -54,8 +54,12 @@ class ModerationServiceContract(Protocol):
         """软删除一个管理员标记, 需要管理员权限"""
         ...
 
-    def list_marks(self, message_source_id: str) -> list[AdminMark]:
-        """查询某条消息下的有效管理员标记, 已删除的标记不返回"""
+    def list_marks(
+        self,
+        user: UserView | None,
+        message_source_id: str,
+    ) -> list[AdminMark]:
+        """查询某条消息下的有效管理员标记, 已删除的标记不返回, 需要管理员权限"""
         ...
 
 

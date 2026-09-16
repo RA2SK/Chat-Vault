@@ -24,8 +24,9 @@ class CommentSubmission:
 
     `target_source_id` 的含义由 `target_type` 决定:
     对话评论指向 Conversation.source_id, 消息评论指向 Message.source_id.
-    当前 `CommentService.create` 仍然接收拆开的参数, 这是留给 Web 层
-    统一收口的输入形状, 待请求模型接入后再改造成整体传入.
+
+    整体传入而不是拆成多个参数, 是为了让 Web 层的请求模型和命令行层的
+    参数解析各自转换成本形状后走同一条路径, 新增字段时不必再改调用签名.
     """
 
     target_type: CommentTarget
@@ -50,10 +51,7 @@ class CommentServiceContract(Protocol):
     def create(
         self,
         user: UserView | None,
-        target_type: CommentTarget,
-        target_source_id: str,
-        content: str,
-        nickname: str = "anonymous",
+        submission: CommentSubmission,
     ) -> Comment:
         """在对话或消息下创建一条评论
 
