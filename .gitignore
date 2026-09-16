@@ -8,6 +8,8 @@ private/
 build/
 dist/
 data/raw/
+# 程序完成后数据库会迁到 data 下, 提前挡住以免把运行库提交进来
+data/*.db
 
 .venv/
 .vscode/

@@ -43,13 +43,13 @@ class AdminMarkRepository:
 
 
     def list_by_message(self, message_source_id: str) -> list[AdminMark]:
-        """查询某条消息下的管理员标记"""
+        """查询某条消息下的有效管理员标记, 已删除的标记不返回"""
 
         rows = self.connection.execute(
             """
             SELECT *
             FROM admin_marks
-            WHERE message_source_id = ?
+            WHERE message_source_id = ? AND is_deleted = 0
             ORDER BY created_at ASC, id ASC
             """,
             (message_source_id,),

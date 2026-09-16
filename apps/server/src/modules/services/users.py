@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from core.enums import UserRole
 from core.models import User
 from core.types import UserId
+from modules.repositories.database import transaction
 from modules.repositories.users import UserRepository
 from utils.hashing import hash_password, verify_password
 
@@ -81,16 +82,20 @@ class UserService:
         if not username or not password:
             raise ValueError("用户名和密码不能为空")
 
-        if self.user_repository.get_by_username(username) is not None:
-            raise ValueError(f"用户名 {username} 已存在")
-
         user = User(
             username=username,
             password_hash=hash_password(password),
             created_at=datetime.now(timezone.utc),
             role=role,
         )
-        self.user_repository.create(user)
+
+        # 重名检查与写入放在同一个事务里, 避免两次并发注册都通过检查
+        with transaction(self.user_repository.connection):
+            if self.user_repository.get_by_username(username) is not None:
+                raise ValueError(f"用户名 {username} 已存在")
+
+            self.user_repository.create(user)
+
         return user
 
 
@@ -136,4 +141,6 @@ class UserService:
             raise ValueError("新密码不能为空")
 
         user.password_hash = hash_password(new_password)
-        self.user_repository.update(user)
+
+        with transaction(self.user_repository.connection):
+            self.user_repository.update(user)

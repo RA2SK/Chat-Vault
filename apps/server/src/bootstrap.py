@@ -1,7 +1,7 @@
 """集中创建数据库连接, 适配器, 仓储和业务服务, 并完成具体实现之间的依赖组装"""
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from modules.interfaces.comments_intf import CommentServiceContract
@@ -45,6 +45,8 @@ class ServiceContainer:
     moderation_service: ModerationServiceContract
     comment_service: CommentServiceContract
 
+    _closed: bool = field(default=False, repr=False, compare=False)
+
     @classmethod
     def create(
         cls,
@@ -71,6 +73,7 @@ class ServiceContainer:
         admin_mark_repository = AdminMarkRepository(connection)
 
         import_service = ImportService(
+            connection=connection,
             import_batch_repository=import_batch_repository,
             conversation_repository=conversation_repository,
             branch_repository=branch_repository,
@@ -108,7 +111,19 @@ class ServiceContainer:
         )
 
     def close(self) -> None:
-        """关闭服务使用的数据库连接"""
+        """关闭服务使用的数据库连接
+
+        关闭前回滚未提交的事务, 重复调用是安全的. 容器可能被调用方和
+        退出流程各关一次, 因此必须允许重复关闭.
+        """
+
+        if self._closed:
+            return
+
+        self._closed = True
+
+        if self.connection.in_transaction:
+            self.connection.rollback()
 
         self.connection.close()
 

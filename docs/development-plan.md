@@ -2,6 +2,22 @@
 
 ## 一、更新日志
 
+### 2026-09-16（事务边界、重复导入与分支更新）
+
+- 事务边界从"依赖 SQLite 隐式事务"改为"在服务层显式声明"：`repositories/database.py` 的 `transaction()` 上下文管理器补齐调用点，`ImportService`、`CommentService`、`ModerationService`、`UserService`、`PublishingService` 的每个写操作各自包在一个 `with transaction(connection):` 里，使"一次业务操作 = 一个事务"在代码里可直接读出来。`ServiceContainer.close()` 在关闭连接前先回滚未提交的事务，避免关闭时静默丢数据。
+- `ImportService` 新增 `connection` 构造参数，直接持有数据库连接用于声明事务边界，而不是绕回某个仓储去取连接。`ServiceContainer` 相应地传入同一个连接。
+- 导入幂等性补上"整份文件是否已导入过"的判断：`ImportBatchRepository.get_by_file_hash()` 与 `ImportBatchStore.get_by_file_hash()` 新增，`ImportService.find_duplicate_import()` 按文件内容摘要判断，命中已成功的批次时 `import_results()` 直接返回该批次，不再重复写入。摘要计算抽成模块级 `_hash_file()`，创建批次和重复检测共用同一条路径。`idx_import_batches_file_hash` 索引在 `schema.sql` 中已存在，无需迁移。
+- 修复"重新导入抹掉消息编辑"：`_save_message()` 在覆盖已有消息前会保留 `edited_at`/`edited_by`，并且对已经编辑过的消息直接跳过写入，因此重新导入不会把内容回退到原始版本，也不会留下"内容已还原但编辑记录仍在"的自相矛盾状态。该保护与已有的 `is_published` 保护采用同一种思路。
+- 修复分支更新静默失效：`BranchRepository.update()` 与 `BranchStore.update()` 新增，`_save_branch()` 原来只是把 `is_current` 从已有记录复制到内存对象上、没有任何写库动作，属于无声的空操作；现在会在保留 `is_current`（由管理侧控制）的前提下把分支其余字段写回数据库。
+- `AdminMarkRepository.list_by_message()` 的 `is_deleted = 0` 过滤从服务层的 Python 列表推导下推到 SQL，`ModerationService.list_marks()` 变为直接转发。
+- 删除 `modules/adapters/detector.py`：该文件只提供 `detect_format()`，没有任何调用方，`adapters/__init__.py` 也不导入它，格式识别实际由 `BaseImporter.detect` 在 `ImportService.import_file()` 中完成。
+- 数据库文件默认路径由 `data/chat_vault.db` 改为 `data/raw/chat_vault.db`。`data/raw/` 已在 `.gitignore` 中，因此不再有误提交数据库文件的风险；等程序完成、数据库回到 `data/` 下时再调整忽略规则。
+- `AttachmentRepository.delete()` 当前没有调用方，契约文档补充说明它是为后续附件管理预留的接口，不是遗留代码。
+- 契约文档同步：`ImportServiceContract` 的"不承诺事务边界"改为描述实际的事务语义，并补充重复导入的说明；`repositories_intf.py` 的契约不对称清单删掉了已经补齐的两条。
+- `ServiceContainer.close()` 改为幂等：容器可能被调用方和退出流程各关一次，重复关闭会落到已关闭的连接上并抛出 `ProgrammingError`，因此用私有标记位挡住第二次关闭。
+- 新增 `tests/test_persistence_and_import.py`，覆盖关闭连接后重新打开数据库仍能读到写入结果、重复导入保留消息编辑且未编辑的消息允许覆盖、分支更新写库同时保留 `is_current`、同一份文件内容被识别为重复导入且不产生新批次、软删除的管理员标记不出现在查询结果里、普通用户添加标记被拒绝。
+- `.gitignore` 增加 `data/*.db`，为数据库将来从 `data/raw/` 迁回 `data/` 提前挡住误提交。
+
 ### 2026-09-16（管理员初始化与对话级评论聚合）
 
 - `UserService` 新增 `register_admin()` 与 `has_admin()`，`register()` 与 `register_admin()` 共用私有的 `_create_user()` 做用户名与密码校验，两者唯一区别是角色。刻意不做"第一个用户自动升格"，创建管理员必须由调用方明确表达意图。
@@ -78,7 +94,6 @@
 - `apps/server/src/core/models/identity.py`：完成用户模型。
 - `apps/server/src/core/models/operations.py`：完成导入批次模型。
 - `apps/server/src/modules/adapters/base.py`：完成输入适配器接口和 `source_type` 类属性约定；`ParseResult` 的定义已移到 `modules/interfaces/importing_intf.py`，本文件保留同名再导出。
-- `apps/server/src/modules/adapters/detector.py`：完成输入格式检测入口。
 - `apps/server/src/modules/adapters/__init__.py`：完成适配器注册。
 - `apps/server/src/modules/adapters/preprocess.py`：完成 `source_id` 命名空间拼接和通用预处理校验。
 - `apps/server/src/modules/adapters/chatbox_v2.py`：完成 Chatbox v2 ZIP 的格式识别、manifest、resource 索引、session、thread、conversation、branch、message、image attachment 和 warning 处理。
@@ -92,11 +107,11 @@
 - `apps/server/src/modules/repositories/comments.py`：完成 `CommentRepository`。
 - `apps/server/src/modules/repositories/moderation.py`：完成 `AdminMarkRepository`。
 - `apps/server/src/modules/repositories/__init__.py`：完成 8 个仓储类的统一导出。
-- `apps/server/src/bootstrap.py`：完成数据库连接、8 个仓储和两个业务服务的依赖组装。
+- `apps/server/src/bootstrap.py`：完成数据库连接、8 个仓储和两个业务服务的依赖组装。服务级事务边界已在各服务内声明，跨服务的事务编排和更完整的生命周期管理尚未实现。
 
 ### 已部分完成
 
-- `apps/server/src/modules/services/importing.py`：已完成适配器调用、解析结果处理、基础校验、幂等保存、`source_archive` 归档信息和导入批次统计；完整事务编排、复杂错误恢复和更多边界规则尚未实现。
+- `apps/server/src/modules/services/importing.py`：已完成适配器调用、解析结果处理、基础校验、幂等保存（含按文件内容摘要的重复导入检测）、`source_archive` 归档信息和导入批次统计；每个导入操作的事务边界已落地，更复杂的错误恢复和更多边界规则尚未实现。
 - `apps/server/src/modules/services/querying.py`：已完成对话列表、已发布对话列表、对话详情以及分支、消息和附件的基础查询；复杂搜索、筛选、排序和分页尚未实现。
 - `apps/server/src/modules/services/users.py`：已完成权限判断、普通用户注册、管理员注册、`has_admin` 检查、认证与改密；返回值的 `UserView` 收窄、用户信息维护和会话管理尚未实现。`register()`/`get()` 目前仍返回带 `password_hash` 的 `User`，调用方不得直接把该对象交给前端。
 - `apps/server/src/modules/services/publishing.py`：只有预先准备好的最小发布权限判断；发布内容整理和展示字段处理尚未实现。
@@ -127,7 +142,8 @@
   - `AdminMark` 和 `Comment` 与 Message 或 Conversation 的关联关系待定。
 
 - `apps/server/src/modules/services/importing.py`
-  - 完整事务编排、复杂错误恢复和更多导入边界规则尚未实现。
+  - 更复杂的错误恢复和更多导入边界规则尚未实现。
+  - 同一个批次内的部分失败目前按整体回滚处理，是否要允许"部分成功"的批次语义待定。
 
 - `apps/server/src/modules/services/querying.py`
   - 复杂搜索、筛选、排序和分页尚未实现。
@@ -139,7 +155,7 @@
   - 目前只有预先准备好的权限校验代码，业务主体尚未实现。
 
 - `apps/server/src/bootstrap.py`
-  - 更完善的服务生命周期管理和事务边界尚未实现。
+  - 跨服务的事务编排和更完善的（尤其涉及多服务协作的）服务生命周期管理尚未实现。
 
 - `apps/server/src/core/__init__.py`
   - 更复杂的业务初始化和导出控制尚未实现。

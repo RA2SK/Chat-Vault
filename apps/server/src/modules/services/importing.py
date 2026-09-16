@@ -1,5 +1,6 @@
 """收适配器生成的导入内容, 执行完整性检查, 重复导入判断, 批次管理和仓储写入流程"""
 
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -23,6 +24,13 @@ from modules.repositories import (
     ImportBatchRepository,
     MessageRepository,
 )
+from modules.repositories.database import transaction
+
+
+def _hash_file(path: Path) -> str:
+    """计算文件内容摘要, 作为重复导入判断的依据"""
+
+    return sha256(path.read_bytes()).hexdigest()
 
 
 def _to_source_type(raw: object) -> SourceType:
@@ -40,6 +48,9 @@ def _to_source_type(raw: object) -> SourceType:
 @dataclass
 class ImportService:
     """备份文件导入服务, 负责导入流程编排"""
+
+    # 服务层自行持有连接, 以便把一次导入划成一个事务
+    connection: sqlite3.Connection
 
     # === 仓储层的各个接口 ===
     import_batch_repository: ImportBatchRepository
@@ -89,8 +100,15 @@ class ImportService:
     ) -> ImportBatch:
         """处理输入适配器产生的解析结果"""
 
-        # === 创建批次记录 ===
         path = Path(path)
+
+        # === 重复导入检测 ===
+        # 同一份文件内容已经成功导入过时, 直接返回原批次, 不重复写入库
+        duplicate = self.find_duplicate_import(_hash_file(path))
+        if duplicate is not None:
+            return duplicate
+
+        # === 创建批次记录 ===
         import_batch = self._create_import_batch(
             path=path,
             format_key=format_key,
@@ -107,12 +125,35 @@ class ImportService:
             import_batch.status = ImportStatus.FAILED
             import_batch.error_summary = str(exc)
             import_batch.finished_at = datetime.now(timezone.utc)
-            self.import_batch_repository.update(import_batch)
+
+            with transaction(self.connection):
+                self.import_batch_repository.update(import_batch)
             raise
 
         # === 更新批次的完成时间和状态 ===
         self._finalize_import_batch(import_batch)
-        self.import_batch_repository.update(import_batch)
+
+        with transaction(self.connection):
+            self.import_batch_repository.update(import_batch)
+
+        return import_batch
+
+
+    def find_duplicate_import(self, file_hash: str) -> ImportBatch | None:
+        """按文件内容摘要查找已成功导入的批次
+
+        返回最近一次同内容且不是失败状态的批次, 供调用方在导入前
+        预先判断; `import_results` 内部也用它避免重复写入.
+        """
+
+        if not file_hash:
+            return None
+
+        import_batch = self.import_batch_repository.get_by_file_hash(file_hash)
+
+        if import_batch is None or import_batch.status == ImportStatus.FAILED:
+            return None
+
         return import_batch
 
 
@@ -124,12 +165,11 @@ class ImportService:
     ) -> ImportBatch:
         """创建处于初始状态的导入批次"""
 
-        file_hash = sha256(path.read_bytes()).hexdigest()
         import_time = datetime.now(timezone.utc)
 
         import_batch = ImportBatch(
             file_name=path.name,
-            file_hash=file_hash,
+            file_hash=_hash_file(path),
             started_at=import_time,
             status=ImportStatus.SUCCESS,
             total_count=0,
@@ -201,14 +241,16 @@ class ImportService:
         conversation.source_archive = import_batch.file_name
         existing = self._find_existing_conversation(conversation)
 
-        if existing is None:
-            self.conversation_repository.create(conversation)
-        else:
-            conversation.is_published = existing.is_published       # 发布状态属于管理域，重复导入不能因为导入模型的默认值而取消发布
-            self.conversation_repository.update(conversation)
+        with transaction(self.connection):
+            if existing is None:
+                self.conversation_repository.create(conversation)
+            else:
+                # 发布状态属于管理域, 重复导入不能因为导入模型的默认值而取消发布
+                conversation.is_published = existing.is_published
+                self.conversation_repository.update(conversation)
 
-        for branch in conversation.branches:                        # 逐个处理分支链
-            self._save_branch(branch, conversation)
+            for branch in conversation.branches:                # 逐个处理分支链
+                self._save_branch(branch, conversation)
 
 
     def _save_branch(
@@ -222,10 +264,11 @@ class ImportService:
 
         if existing is None:
             self.branch_repository.create(branch, conversation.source_id)
-        elif branch.is_current != existing.is_current:
-            branch.is_current = existing.is_current   # 当前链标记属管理域，重复导入不覆盖
+        else:
+            branch.is_current = existing.is_current             # 当前链标记属管理域, 重复导入不覆盖
+            self.branch_repository.update(branch)
 
-        for message in branch.messages:                             # 逐个处理消息
+        for message in branch.messages:                         # 逐个处理消息
             self._save_message(message, branch)
 
 
@@ -234,16 +277,24 @@ class ImportService:
         message: Message,
         branch: Branch,
     ) -> None:
-        """保存或更新一条消息, 并保存其附件"""
+        """保存或更新一条消息, 并保存其附件
+
+        重复导入不能抹掉管理员对消息做的编辑: 已编辑过的消息保留原有内容和
+        编辑记录, 未编辑过的消息才允许按新解析结果覆盖.
+        """
 
         existing = self.message_repository.get_by_source_id(message.source_id)
 
         if existing is None:
             self.message_repository.create(message, branch.source_id)
         else:
-            self.message_repository.update(message)
+            message.edited_at = existing.edited_at
+            message.edited_by = existing.edited_by
 
-        for attachment in message.attachments:                      # 逐个处理附件
+            if existing.edited_at is None:
+                self.message_repository.update(message)
+
+        for attachment in message.attachments:                  # 逐个处理附件
             self._save_attachment(attachment)
 
 

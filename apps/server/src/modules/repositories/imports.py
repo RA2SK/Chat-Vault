@@ -65,6 +65,26 @@ class ImportBatchRepository:
         return to_import_batch(row)
 
 
+    def get_by_file_hash(self, file_hash: str) -> ImportBatch | None:
+        """根据文件内容摘要查询最近一次的导入批次"""
+
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM import_batches
+            WHERE file_hash = ?
+            ORDER BY started_at DESC, id DESC
+            LIMIT 1
+            """,
+            (file_hash,),
+        ).fetchone()
+
+        if row is None:
+            return None
+
+        return to_import_batch(row)
+
+
     def update(self, import_batch: ImportBatch) -> None:
         """更新一个导入批次"""
 

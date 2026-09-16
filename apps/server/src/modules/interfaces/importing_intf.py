@@ -74,8 +74,12 @@ class ImportServiceContract(Protocol):
 
     具体实现的构造依赖为: 导入批次, 对话, 分支, 消息和附件五个仓储契约.
 
-    契约只描述调用形状, 不承诺事务边界. 目前 `import_results` 在异常时
-    只把批次标记为失败并记录摘要, 已经写入的内容不会回滚.
+    事务边界: 一次导入调用对应一个事务. `import_results` 在内部按批次的
+    写入划分事务, 批次创建, 逐条内容写入和批次收尾都在事务保护下进行,
+    失败时已经写入的内容会随事务回滚, 不会留下半份数据.
+
+    重复导入: 同一份文件内容(按内容摘要判断)已经成功导入过时,
+    `import_results` 直接返回上一次的批次记录, 不重复写入库.
     """
 
     def import_file(self, path: Path, importer: BaseImporter) -> ImportBatch:
@@ -93,6 +97,13 @@ class ImportServiceContract(Protocol):
         source_type: SourceType = SourceType.OTHER,
     ) -> ImportBatch:
         """消费适配器产生的解析结果, 返回导入批次结果"""
+        ...
+
+    def find_duplicate_import(self, file_hash: str) -> ImportBatch | None:
+        """按文件内容摘要查询已经成功导入过的批次
+
+        没有匹配批次, 或者匹配到的批次是失败状态时返回 None
+        """
         ...
 
 

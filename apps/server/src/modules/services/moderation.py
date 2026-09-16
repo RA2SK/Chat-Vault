@@ -5,8 +5,9 @@ from datetime import datetime, timezone
 from core.enums import MarkType
 from core.models import AdminMark, Message, User
 from core.types import AdminMarkId
-from modules.repositories.moderation import AdminMarkRepository
+from modules.repositories.database import transaction
 from modules.repositories.messages import MessageRepository
+from modules.repositories.moderation import AdminMarkRepository
 from modules.services.users import is_admin, require_admin
 
 
@@ -61,7 +62,10 @@ class ModerationService:
             created_at=datetime.now(timezone.utc),
             created_by=user.id,
         )
-        self.admin_mark_repository.create(mark)
+
+        with transaction(self.admin_mark_repository.connection):
+            self.admin_mark_repository.create(mark)
+
         return mark
 
 
@@ -69,14 +73,12 @@ class ModerationService:
         """软删除一个管理员标记"""
 
         require_admin(user)
-        self.admin_mark_repository.soft_delete(mark_id)
+
+        with transaction(self.admin_mark_repository.connection):
+            self.admin_mark_repository.soft_delete(mark_id)
 
 
     def list_marks(self, message_source_id: str) -> list[AdminMark]:
-        """查询某条消息下的管理员标记"""
+        """查询某条消息下的有效管理员标记, 已删除的标记不返回"""
 
-        return [
-            mark
-            for mark in self.admin_mark_repository.list_by_message(message_source_id)
-            if not mark.is_deleted
-        ]
+        return self.admin_mark_repository.list_by_message(message_source_id)

@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Generator
 
 # 默认数据库和数据库结构文件的位置
-DEFAULT_DATABASE_PATH = Path("data/chat_vault.db")
+# 程序尚未成型, 数据库暂时生成在 data/raw 下, 完成后再迁回 data 下
+DEFAULT_DATABASE_PATH = Path("data/raw/chat_vault.db")
 DEFAULT_SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 
@@ -53,7 +54,11 @@ def transaction(
 
 
 def close_connection(connection: sqlite3.Connection) -> None:
-    """关闭数据库连接"""
+    """关闭数据库连接, 关闭前丢弃未提交的事务"""
+
+    if connection.in_transaction:
+        connection.rollback()
+
     connection.close()
 
 

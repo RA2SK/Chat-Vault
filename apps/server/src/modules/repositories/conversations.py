@@ -195,6 +195,34 @@ class BranchRepository:
         return to_branch(row)
 
 
+    def update(self, branch: Branch) -> None:
+        """更新一个分支
+
+        不改变分支所属的对话: 分支归属由首次导入时的对话决定, 迁移分支
+        属于内容图重构, 不属于重复导入的处理范围.
+        """
+
+        self.connection.execute(
+            """
+            UPDATE branches
+            SET branch_index = ?,
+                fork_message_source_id = ?,
+                created_at = ?,
+                updated_at = ?,
+                is_current = ?
+            WHERE source_id = ?
+            """,
+            (
+                branch.index,
+                branch.fork_message_source_id,
+                to_db_datetime(branch.created_at),
+                to_db_datetime(branch.updated_at),
+                int(branch.is_current),
+                branch.source_id,
+            ),
+        )
+
+
     def list_by_conversation(self, conversation_source_id: str) -> list[Branch]:
         """查询某个对话下的所有分支"""
 

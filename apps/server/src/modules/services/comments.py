@@ -6,6 +6,7 @@ from core.enums import CommentTarget
 from core.models import Comment, Conversation, User
 from core.types import CommentId
 from modules.repositories.comments import CommentRepository
+from modules.repositories.database import transaction
 from modules.services.publishing import can_view_conversation
 from modules.services.querying import QueryService
 from modules.services.users import is_admin, is_authenticated, require_admin
@@ -89,7 +90,10 @@ class CommentService:
             conversation_source_id=conversation_source_id,
             message_source_id=message_source_id,
         )
-        self.comment_repository.create(comment)
+
+        with transaction(self.comment_repository.connection):
+            self.comment_repository.create(comment)
+
         return comment
 
 
@@ -128,4 +132,6 @@ class CommentService:
         """软删除一条评论"""
 
         require_admin(user)
-        self.comment_repository.soft_delete(comment_id)
+
+        with transaction(self.comment_repository.connection):
+            self.comment_repository.soft_delete(comment_id)

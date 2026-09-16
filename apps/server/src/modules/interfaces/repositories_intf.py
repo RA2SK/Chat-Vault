@@ -11,11 +11,9 @@
 source_id, 而不是先取出父节点对象.
 
 刻意保留的不对称, 不是遗漏:
-- BranchStore 没有 update: 分支只在首次导入时创建
 - MessageStore 没有 delete: 消息的移除通过重复导入覆盖实现
 - CommentStore / AdminMarkStore 没有 get_by_id: 删除只需 id, 不需要先读取
 - CommentStore / AdminMarkStore 只提供软删除: 评论和标记需要保留审计痕迹
-- ImportBatchStore 没有按 file_hash 查询的方法, 重复导入检测尚未启用
 """
 
 from typing import Protocol
@@ -72,6 +70,13 @@ class BranchStore(Protocol):
         """根据来源 ID 查询分支"""
         ...
 
+    def update(self, branch: Branch) -> None:
+        """更新一个分支
+
+        不改变分支所属的对话: 分支归属由首次导入时的对话决定
+        """
+        ...
+
     def list_by_conversation(self, conversation_source_id: str) -> list[Branch]:
         """查询某个对话下的所有分支, 按 branch_index 升序"""
         ...
@@ -123,8 +128,12 @@ class AttachmentStore(Protocol):
         ...
 
     def delete(self, message_source_id: str, source_ref: str) -> None:
-        """按附件身份删除一个附件"""
-        ...
+            """按附件身份删除一个附件
+
+            附件按 (message_source_id, source_ref) 整体替换即可满足当前需求,
+            因此本方法暂无调用方, 保留给后续的附件管理能力使用.
+            """
+            ...
 
 
 class CommentStore(Protocol):
@@ -176,7 +185,7 @@ class AdminMarkStore(Protocol):
         ...
 
     def list_by_message(self, message_source_id: str) -> list[AdminMark]:
-        """查询某条消息下的管理员标记"""
+        """查询某条消息下的管理员标记, 已删除的标记不返回"""
         ...
 
     def soft_delete(self, mark_id: AdminMarkId) -> None:
@@ -223,6 +232,13 @@ class ImportBatchStore(Protocol):
         """根据 ID 查询导入批次"""
         ...
 
+    def get_by_file_hash(self, file_hash: str) -> ImportBatch | None:
+        """根据文件内容摘要查询最近一次的导入批次, 用于重复导入检测
+
+        同一份文件可能被导入多次, 返回开始时间最新的那一批
+        """
+        ...
+
     def update(self, import_batch: ImportBatch) -> None:
         """更新一个导入批次"""
         ...
@@ -237,4 +253,4 @@ __all__ = [
     "ImportBatchStore",
     "MessageStore",
     "UserStore",
-    ]
+]

@@ -3,6 +3,7 @@
 from core.models import Conversation, User
 from modules.interfaces.querying_intf import ConversationDetail
 from modules.repositories.conversations import ConversationRepository
+from modules.repositories.database import transaction
 from modules.services.querying import QueryService
 from modules.services.users import is_admin, require_admin
 
@@ -88,5 +89,8 @@ class PublishingService:
             raise LookupError(f"对话 {conversation_source_id} 不存在")
 
         conversation.is_published = is_published
-        self.conversation_repository.update(conversation)
+
+        with transaction(self.conversation_repository.connection):
+            self.conversation_repository.update(conversation)
+
         return conversation
