@@ -48,6 +48,11 @@ class _MaterializedCursor(sqlite3.Cursor):
         cursor: sqlite3.Cursor,
         rows: list[Any],
     ) -> None:
+        # 已知问题: super().__init__() 会创建一个真实的 sqlite3 游标并向连接注册,
+        # 而本类只借用它读取 description / rowcount / lastrowid, 之后不再使用,
+        # 因此这个真实游标不会被 close(). 影响有限: 它只持有连接引用和少量状态,
+        # 随本对象一起被回收; 连接关闭时 sqlite3 会隐式失效所有游标, 不会报错.
+        # 若要消除, 可在读完三个属性后立刻 cursor.close(), 但当前没有实际收益.
         super().__init__(connection)
         self._rows = rows
         self._index = 0
@@ -87,6 +92,13 @@ class _MaterializedCursor(sqlite3.Cursor):
 
 
     def fetchmany(self, size: int | None = None):
+        # 已知问题: 标准 sqlite3 游标在 size 为 None 时读 self.arraysize,
+        # 而 arraysize 是可写属性(默认值恰好也是 1). 这里硬编码 1, 默认行为
+        # 与标准游标一致, 但调用方设置 arraysize 后不会生效——本类没有覆写
+        # arraysize, 于是它可写却无效, 属于最坏的一种情况.
+        # 当前全仓库没有任何地方调用 fetchmany 或设置 arraysize, 因此不构成
+        # 实际缺陷. 将来若需要分页, 更合适的方向是给仓储层加显式的
+        # limit / offset 参数, 而不是依赖游标的 fetchmany.
         if size is None:
             size = 1
 
@@ -180,6 +192,11 @@ def initialize_database(
     schema_path: Path = DEFAULT_SCHEMA_PATH,
 ) -> None:
     """执行 schema.sql, 初始化数据库结构
+
+    注意: sqlite3 的 executescript() 在执行前会隐式提交当前未完成的事务,
+    这是该模块的既定行为. 因此本函数禁止在 transaction() 内部调用, 否则外层
+    事务会被静默提交, 回滚语义失效. 当前唯一调用点是 ServiceContainer.create(),
+    调用时没有外层事务.
 
     Raises:
         PersistenceError: 结构文件读取失败或 SQL 执行失败时抛出

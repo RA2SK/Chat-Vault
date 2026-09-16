@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 
 from core.enums import UserRole
@@ -50,6 +51,58 @@ def require_authenticated(user: UserView | None) -> None:
         raise NotAuthenticatedError(MessageKey.AUTHENTICATION_REQUIRED)
 
 
+# 用户名允许字母, 数字, 下划线和连字符. 刻意不允许空白和标点:
+# 纯空白用户名会创建一个界面上无法复现的"幽灵账号", 而换行等控制字符
+# 会破坏单行日志格式.
+_USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+
+# 密码允许字母, 数字和常见符号. 用白名单而不是黑名单: 黑名单永远列不全,
+# 而白名单能一次性排除控制字符, 换行, 以及各种同形异义字符.
+# 刻意排除引号, 分号, 反斜杠和尖括号: 它们是最典型的注入载荷字符,
+# 保留在密码里除了增加输入负担之外没有价值.
+# 也刻意排除空格——空格本身合法, 但极易在输入时被误删导致无法登录.
+_PASSWORD_PATTERN = re.compile(r"^[A-Za-z0-9!@#$%^&*()_+\-=\[\]{}.,?/|~]+$")
+
+_USERNAME_MAX_LENGTH = 64
+
+# 密码长度上限. 密码会走 pbkdf2_hmac 十万轮, 一个超长密码会让每次登录
+# 消耗可观的 CPU, 是一个廉价的拒绝服务面.
+_PASSWORD_MAX_LENGTH = 1024
+
+
+def validate_username(username: str) -> None:
+    """校验用户名, 不合法时抛出 ValidationError
+
+    只做规范化判断, 不修改入参: 调用方拿到的仍是原始字符串.
+    """
+
+    if not _USERNAME_PATTERN.match(username):
+        raise ValidationError(MessageKey.USERNAME_INVALID)
+
+    if len(username) > _USERNAME_MAX_LENGTH:
+        raise ValidationError(
+            MessageKey.USERNAME_TOO_LONG,
+            max_length=_USERNAME_MAX_LENGTH,
+        )
+
+
+def validate_password(password: str) -> None:
+    """校验密码, 不合法时抛出 ValidationError
+
+    刻意不对密码做 strip(): 前后空格是密码的一部分, 剥掉会让用户
+    无法用自己设定的密码登录. 空格本身已由白名单排除.
+    """
+
+    if not _PASSWORD_PATTERN.match(password):
+        raise ValidationError(MessageKey.PASSWORD_INVALID)
+
+    if len(password) > _PASSWORD_MAX_LENGTH:
+        raise ValidationError(
+            MessageKey.PASSWORD_TOO_LONG,
+            max_length=_PASSWORD_MAX_LENGTH,
+        )
+
+
 class UserService:
     """处理用户注册, 认证和信息维护"""
 
@@ -84,10 +137,19 @@ class UserService:
 
 
     def _create_user(self, username: str, password: str, role: UserRole) -> UserView:
-        """创建用户并落库, 用户名与密码的校验由本方法统一负责"""
+        """创建用户并落库, 用户名与密码的校验由本方法统一负责
+
+        校验分两层: 先查空值, 再查字符集与长度. 字符集白名单是纵深防御——
+        仓储层全部使用参数化查询 (占位符 ``?``), 不存在 SQL 注入路径,
+        但用户名会进入日志和响应体, 限制字符集可以避免控制字符破坏日志格式,
+        也避免创建出界面上无法复现的账号.
+        """
 
         if not username or not password:
             raise ValidationError(MessageKey.CREDENTIALS_EMPTY)
+
+        validate_username(username)
+        validate_password(password)
 
         user = User(
             username=username,
@@ -176,6 +238,12 @@ class UserService:
         if not new_password:
             raise ValidationError(MessageKey.NEW_PASSWORD_EMPTY)
 
+        validate_password(new_password)
+
+        # 已知取舍: 不检查新密码是否与旧密码相同. 这不是安全缺陷 (不降低强度),
+        # 只是语义上的空操作, 而 "禁止改成相同密码" 本身是产品决策.
+        # 若将来需要, 应在此处用 verify_password(new_password, current.password_hash)
+        # 判断 (库里存的是散列, 不能做字符串比较), 为真时抛 ValidationError.
         current = self.user_repository.get_by_id(user.id)
         if current is None:
             raise NotFoundError(MessageKey.USER_NOT_FOUND, user_id=user.id)

@@ -160,10 +160,23 @@ def main() -> None:
 
     import uvicorn
 
+    # 已知取舍: host 和 port 刻意硬编码, 不做成环境变量.
+    # 127.0.0.1 只监听本机, 而当前 API 没有真正的认证 (身份来自请求头,
+    # 任何人都能伪造), 因此 "不能对外暴露" 是一道必要的防线. 若做成环境变量,
+    # 用户设成 0.0.0.0 就会把无认证的 API 暴露到局域网.
+    # 等真正的认证落地后, 再按 CHAT_VAULT_HOST / CHAT_VAULT_PORT 开放,
+    # 且默认值仍应保持 127.0.0.1.
     uvicorn.run(app, host="127.0.0.1", port=8000)
 
 
 app = create_app()
+
+# 已知副作用: 上面这一行使 "import main" 本身就会配置全局日志, 因为
+# create_app() 内部调用了 configure_logging(). 任何 import main 的代码
+# (测试, 工具脚本) 都会触发.
+# 这是被 uvicorn 的加载方式逼出来的: "uvicorn main:app" 只加载模块而不调用
+# main(), 因此日志配置必须发生在 create_app() 里, 否则该启动路径下完全没有
+# 日志配置. 配置函数是幂等的, 重复导入不会叠加处理器, 因此保留现状.
 
 
 if __name__ == "__main__":

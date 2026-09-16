@@ -38,6 +38,10 @@ class MessageKey(str, Enum):
     AUTHENTICATION_REQUIRED = "authentication_required"
     CREDENTIALS_EMPTY = "credentials_empty"
     USERNAME_ALREADY_EXISTS = "username_already_exists"
+    USERNAME_INVALID = "username_invalid"
+    USERNAME_TOO_LONG = "username_too_long"
+    PASSWORD_INVALID = "password_invalid"
+    PASSWORD_TOO_LONG = "password_too_long"
     NEW_PASSWORD_EMPTY = "new_password_empty"
     USER_NOT_FOUND = "user_not_found"
     PASSWORD_INCORRECT = "password_incorrect"
@@ -102,6 +106,10 @@ TEXTS: dict[MessageKey, str] = {
     MessageKey.AUTHENTICATION_REQUIRED: "需要登录后才能执行此操作",
     MessageKey.CREDENTIALS_EMPTY: "用户名和密码不能为空",
     MessageKey.USERNAME_ALREADY_EXISTS: "用户名 {username} 已存在",
+    MessageKey.USERNAME_INVALID: "用户名只能包含字母, 数字, 下划线和连字符",
+    MessageKey.USERNAME_TOO_LONG: "用户名长度不能超过 {max_length} 个字符",
+    MessageKey.PASSWORD_INVALID: "密码只能包含字母, 数字和常见符号",
+    MessageKey.PASSWORD_TOO_LONG: "密码长度不能超过 {max_length} 个字符",
     MessageKey.NEW_PASSWORD_EMPTY: "新密码不能为空",
     MessageKey.USER_NOT_FOUND: "用户 {user_id} 不存在",
     MessageKey.PASSWORD_INCORRECT: "旧密码不正确",

@@ -17,7 +17,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
-__all__ = ["configure_logging", "is_configured"]
+__all__ = ["configure_logging"]
 
 # logging.LogRecord 自身的属性, 不属于调用方通过 extra 传进来的结构化字段
 _STANDARD_RECORD_ATTRIBUTES = frozenset(
@@ -72,8 +72,6 @@ _SENSITIVE_FRAGMENTS = (
 )
 
 _REDACTED = "***"
-
-_configured = False
 
 
 class _ChatVaultHandler(logging.StreamHandler):
@@ -173,12 +171,6 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 
-def is_configured() -> bool:
-    """报告本模块是否已安装过处理器, 供入口做幂等判断和测试使用"""
-
-    return _configured
-
-
 def configure_logging(
     level: int | str = logging.INFO,
     *,
@@ -198,8 +190,6 @@ def configure_logging(
             应当立刻失败, 而不是悄悄退回某个默认级别
     """
 
-    global _configured
-
     if isinstance(level, str):
         resolved = logging.getLevelNamesMapping().get(level.upper())
         if resolved is None:
@@ -217,6 +207,11 @@ def configure_logging(
     handler.setFormatter(JsonFormatter() if json_output else TextFormatter())
 
     root.addHandler(handler)
+
+    # 已知取舍: 这里设置的是根日志器的级别, 而不是本处理器自己的级别.
+    # 副作用是传入 DEBUG 会同时放开第三方库 (uvicorn, httpx 等) 的日志,
+    # 传入 WARNING 则会压掉它们的 INFO. 当前只有进程入口调用本函数, 此时
+    # "入口决定全局级别" 正是期望行为, 因此保留. 若将来有库代码或测试调用,
+    # 需要改为给 handler 设级别, 代价是失去 "DEBUG 能看到第三方库日志" 这一点.
     root.setLevel(level)
 
-    _configured = True

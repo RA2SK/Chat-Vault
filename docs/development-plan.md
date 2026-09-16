@@ -2,6 +2,26 @@
 
 ## 一、更新日志
 
+### 2026-09-21（凭据校验、事务内赋值与遗留问题标注）
+
+本轮处理的是上一轮评估中列出的 15 项遗留问题。按处理方式分三类：真正修改的、只加注释标注的、以及确认不改的。
+
+- **新增凭据字符集与长度校验（`modules/services/users.py`）**。`_create_user()` 此前只检查空值，`not "   "` 为假，因此纯空白用户名可以落库，创建一个界面上无法复现的"幽灵账号"；用户名和密码也没有长度上限，而密码会走 `pbkdf2_hmac` 十万轮，一个超长密码会让每次登录消耗可观的 CPU，是一个廉价的拒绝服务面。现在用户名限定为字母、数字、下划线和连字符，上限 64 字符；密码限定为字母、数字和常见符号，上限 1024 字符。两者都用白名单而不是黑名单：黑名单永远列不全，白名单能一次性排除控制字符、换行和同形异义字符。密码白名单刻意排除引号、分号、反斜杠和尖括号——它们是最典型的注入载荷字符，留在密码里除了增加输入负担没有价值；也排除空格，空格本身合法但极易在输入时被误删导致无法登录。新增 `MessageKey.USERNAME_INVALID`、`USERNAME_TOO_LONG`、`PASSWORD_INVALID`、`PASSWORD_TOO_LONG`。`change_password()` 同样接入密码校验。**需要说明的是，仓储层全部使用参数化查询（占位符 `?`），不存在 SQL 注入路径**，字符集限制是纵深防御，主要收益是防止控制字符破坏单行日志格式、以及避免创建出无法复现的账号。
+- **`_set_published()` 的赋值移入事务（`modules/services/publishing.py`）**。原本 `conversation.is_published = is_published` 发生在进入 `with transaction(...)` 之前，若 `update()` 抛异常，事务回滚、数据库状态不变，但内存中的对象已经被改过，而该对象正是本方法的返回值，于是调用方会拿到一个"声称已发布但库里没发布"的对象。现在赋值与写入同处事务内，异常时内存与数据库保持一致。
+- **`ServiceContainer.close()` 复用 `close_connection()`（`bootstrap.py`）**。两处逻辑原本是重复的副本，`close_connection()` 因此没有任何调用方。现在 `close()` 调用它，但幂等责任仍留在 `close()`：`close_connection()` 自身不做重复关闭保护，对已关闭的连接再调一次会抛 `ProgrammingError`，所以 `_closed` 检查必须在外层。
+- **修正 `ensure_initial_admin()` 的文档（`bootstrap.py`）**。文档写"用户名已被占用时抛出 `ValueError`"，实际抛出的是 `ConflictError`。`ConflictError` 继承自 `ValueError`，所以这句话在 `isinstance` 意义上为真，但会误导读者去 `except ValueError`，而正确做法是 `except ConflictError`。
+- **删除死代码 `is_configured()`（`utils/logging.py`）**。该函数连同 `__all__` 导出和模块级 `_configured` 变量一并移除。全仓库没有任何调用方，文档声称的"供入口做幂等判断和测试使用"两个用途都不成立：`configure_logging()` 自身就是幂等的，测试也没有用它。保留它只会让读者以为存在某种需要显式检查配置状态的场景。
+- **为六处"确认不改"的问题补上注释**，说明问题是什么、为什么现在不改、将来什么条件下需要改：
+  - `_MaterializedCursor.__init__` 会创建一个永不 `close()` 的真实游标（`modules/repositories/database.py`）。
+  - `_MaterializedCursor.fetchmany()` 硬编码默认值 1，而标准游标读可写的 `arraysize` 属性，因此调用方设置 `arraysize` 后不会生效（`modules/repositories/database.py`）。
+  - `initialize_database()` 的 `executescript()` 会隐式提交当前事务，因此禁止在 `transaction()` 内调用（`modules/repositories/database.py`）。
+  - `configure_logging()` 设置的是根日志器级别而非处理器级别，副作用是同时放开或压掉第三方库的日志（`utils/logging.py`）。
+  - `main()` 的 host 与 port 刻意硬编码：当前 API 没有真正的认证，`127.0.0.1` 是一道必要防线，做成环境变量会让用户把无认证的 API 暴露到局域网（`main.py`）。
+  - 模块级 `app = create_app()` 使 `import main` 本身成为日志配置的副作用，这是被 uvicorn 的加载方式逼出来的（`main.py`）。
+  - `change_password()` 不检查新密码是否与旧密码相同，这是产品决策而非安全缺陷（`modules/services/users.py`）。
+  - 导入端点接收任意服务器本地路径，构成任意文件读取面，当前部署形态下是有意设计，接入认证时必须一并处理（`api/routes.py`）。
+- 全量测试 158 项通过（新增的文本键带来 4 项参数化用例）；`ruff` 无新增问题（剩余 12 项 `E501` 为既有问题）；`pyright` 在 `basic` 模式下 0 错误。另用临时脚本验证了凭据校验的接受与拒绝边界、以及 `_set_published()` 在 `update()` 失败时内存与数据库保持一致，验证后已删除脚本。
+
 ### 2026-09-20（枚举往返、导入原子性与仓储层缺陷修复）
 
 本轮修复的是"能跑通但结果不对"的一类缺陷：它们不会让测试变红，因为测试没有覆盖到，但会在真实使用中给出错误结果或直接崩溃。

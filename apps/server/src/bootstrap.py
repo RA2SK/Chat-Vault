@@ -20,7 +20,11 @@ from modules.repositories import (
     MessageRepository,
     UserRepository,
 )
-from modules.repositories.database import get_connection, initialize_database
+from modules.repositories.database import (
+    close_connection,
+    get_connection,
+    initialize_database,
+)
 from modules.services.comments import CommentService
 from modules.services.importing import ImportService
 from modules.services.moderation import ModerationService
@@ -121,10 +125,9 @@ class ServiceContainer:
 
         self._closed = True
 
-        if self.connection.in_transaction:
-            self.connection.rollback()
-
-        self.connection.close()
+        # 幂等责任在本方法: close_connection() 自身不做重复关闭保护,
+        # 对已关闭的连接再调一次会抛 ProgrammingError, 因此必须先检查 _closed
+        close_connection(self.connection)
 
 
 def ensure_initial_admin(
@@ -139,7 +142,7 @@ def ensure_initial_admin(
     默认口令一旦写进代码就等于把管理员入口公开.
 
     两者任一为空时直接跳过并返回 False, 这是"不启用自动初始化"的开关.
-    用户名已被占用时抛出 ValueError, 由调用方决定如何处理.
+    用户名已被占用时抛出 ConflictError, 由调用方决定如何处理.
     """
 
     if not username or not password:

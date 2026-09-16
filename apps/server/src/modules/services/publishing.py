@@ -191,9 +191,11 @@ class PublishingService:
                 conversation_source_id=conversation_source_id,
             )
 
-        conversation.is_published = is_published
-
+        # 赋值放在事务内: 若 update() 抛异常, 事务回滚, 数据库状态不变,
+        # 此时内存中的 conversation 也必须保持原状, 否则本方法返回的对象
+        # 会声称 "已发布" 而库里并没有发布.
         with transaction(self.conversation_repository.connection):
+            conversation.is_published = is_published
             self.conversation_repository.update(conversation)
 
         return conversation
