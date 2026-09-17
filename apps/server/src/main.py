@@ -48,6 +48,13 @@ LOG_JSON_ENV = "CHAT_VAULT_LOG_JSON"
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
+# 默认监听端口. 刻意避开 8000: 该端口在 Windows 上极易被其他常驻程序
+# (代理 / 网络管理 / 各类开发服务器) 以 IPv6 通配地址 [::] 占用, 而 [::]
+# 会连带占用 IPv4 的同一端口, 表现为绑定时抛出 WinError 10013, 这个错误码
+# 看上去像权限问题, 实际原因是端口已被占用, 排查成本很高. 8421 不在常见
+# 开发工具的默认端口之列, 也不在 Windows 动态端口范围 (49152 起) 内.
+DEFAULT_PORT = 8421
+
 
 def _database_path() -> Path | None:
     """读取数据库路径
@@ -165,8 +172,8 @@ def main() -> None:
     # 任何人都能伪造), 因此 "不能对外暴露" 是一道必要的防线. 若做成环境变量,
     # 用户设成 0.0.0.0 就会把无认证的 API 暴露到局域网.
     # 等真正的认证落地后, 再按 CHAT_VAULT_HOST / CHAT_VAULT_PORT 开放,
-    # 且默认值仍应保持 127.0.0.1.
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    # 且默认值仍应保持 127.0.0.1. 端口取值见模块顶部的 DEFAULT_PORT.
+    uvicorn.run(app, host="127.0.0.1", port=DEFAULT_PORT)
 
 
 app = create_app()
